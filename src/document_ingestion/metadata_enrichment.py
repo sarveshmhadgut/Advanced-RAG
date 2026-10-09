@@ -3,32 +3,35 @@ Handles inference of topics from document text and extraction of file metadata,
 enriching documents before they are embedded and stored.
 """
 
-import re
-import sys
-import yaml
-from typing import Any
-import hashlib
 import datetime
+import hashlib
+import re
+import shutil
+import sys
 from pathlib import Path
+from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+import yaml
+from termcolor import colored
+
+ROOT: Path = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-DOCUMENTS_DIRPATH = ROOT / "data" / "input" / "documents"
-PDFS_DIRPATH = ROOT / "data" / "input" / "pdfs"
-PARAMS_FILEPATH = ROOT / "config" / "params.yml"
-
 from src import console
-from src.logger import logging
 from src.exception import MyException
+from src.logger import logging
+
+width = shutil.get_terminal_size().columns
+PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
+DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
 
 # Load topics from centralized config, falling back to empty dict if file is empty
 with open(PARAMS_FILEPATH, "r") as f:
     params = yaml.safe_load(f) or {}
 
-__all__ = ["enrich_metadata", "infer_topics"]
-
 TOPICS: list[str] = params.get("topics", [])
+__all__: list[str] = ["enrich_metadata", "infer_topics"]
 
 
 def infer_topics(text: str) -> list[str]:
@@ -42,21 +45,25 @@ def infer_topics(text: str) -> list[str]:
     Returns:
         list[str]:
             - A list of matched topic strings from the predefined TOPICS list.
-            - An empty list if no topics are found in the text.
+            - An empty list if no topics are found in the text or if text is empty.
 
     Raises:
-        MyException: If the topic inference process fails.
+        MyException: If text is None or topic inference fails.
     """
     try:
         logging.info("Inferring topics...")
+
+        if text is None:
+            raise ValueError("text cannot be None")
+
+        if not text:
+            return []
 
         normalized_text: str = text.lower()
         inferred_topics: list[str] = []
 
         for topic in TOPICS:
-            pattern: str = rf"\b{re.escape(topic.lower())}\b"
-
-            if re.search(pattern, normalized_text):
+            if re.search(rf"\b{re.escape(topic.lower())}\b", normalized_text):
                 inferred_topics.append(topic)
 
         logging.info("Topics inferred.")
@@ -67,7 +74,10 @@ def infer_topics(text: str) -> list[str]:
         raise MyException(e, sys) from e
 
 
-def enrich_metadata(path: Path, text: str) -> dict[str, Any]:
+def enrich_metadata(
+    path: Path,
+    text: str,
+) -> dict[str, Any]:
     """
     Enriches a document with metadata extracted from its file system properties
     and content analysis, including file stats, word counts, topics, and a
@@ -78,7 +88,7 @@ def enrich_metadata(path: Path, text: str) -> dict[str, Any]:
         text (str): The full text content of the document.
 
     Returns:
-        dict:
+        dict[str, Any]:
             - A metadata dictionary containing:
                 - "source" (str): The file path as a string.
                 - "title" (str): The file stem formatted as a title.
@@ -92,13 +102,19 @@ def enrich_metadata(path: Path, text: str) -> dict[str, Any]:
                 - "content_hash" (str): SHA-256 hash of the text content.
 
     Raises:
-        MyException: If metadata extraction fails.
+        MyException: If inputs are invalid or metadata extraction fails.
     """
     try:
         logging.info("Enriching metadata...")
 
         if not path:
-            return {}
+            raise ValueError("path must be provided")
+
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        if text is None:
+            raise ValueError("text cannot be None")
 
         stats = path.stat()
         metadata: dict[str, Any] = {
@@ -155,10 +171,13 @@ def main() -> None:
         )
 
         for file in files:
+            filename = file.name
             text: str = file.read_text(encoding="utf-8", errors="ignore")
 
             metadata: dict[str, Any] = enrich_metadata(path=file, text=text)
+            print(colored("_" * width, "grey"), colored(filename.center(width), "blue"))
             console.print_json(data=metadata)
+            print(colored("_" * width, "grey"))
 
         logging.info("Metadata enrichment pipeline completed.")
 

@@ -1,16 +1,23 @@
+"""
+Configures application-wide logging with colored console output and rotating file handlers.
+"""
+
 import logging
 import os
 import sys
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import colorlog
 
 from src.exception import MyException
 
+__all__: list[str] = ["config_logger", "get_current_timestamp", "logging"]
+
 # Get root directory of the project
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+ROOT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 LOGS_DIR: str = "logs"
 
 
@@ -18,10 +25,8 @@ def get_current_timestamp() -> str:
     """
     Generates a formatted timestamp string for the current time.
 
-
     Returns:
-        str:
-            - The current timestamp formatted as "YYYY-MM-DD_HH-MM-SS".
+        str: The current timestamp formatted as "DD-Mon-YY_HH-MM-SS".
 
     Raises:
         MyException: If timestamp generation fails.
@@ -39,7 +44,7 @@ maxBytes: int = 5 * 1024 * 1024  # 5 MB
 backupCount: int = 4
 
 try:
-    logs_dirpath: str = os.path.join(ROOT_DIR, LOGS_DIR)
+    logs_dirpath: str = os.path.join(str(ROOT_DIR), LOGS_DIR)
     os.makedirs(logs_dirpath, exist_ok=True)
     log_filepath: str = os.path.join(logs_dirpath, LOG_FILE_FORMAT)
 except Exception as e:
@@ -77,7 +82,7 @@ def config_logger() -> None:
 
         if not logger.handlers:
             console_handler: logging.StreamHandler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
+            console_handler.setLevel(logging.WARNING)
             console_handler.setFormatter(console_format)
             logger.addHandler(console_handler)
 

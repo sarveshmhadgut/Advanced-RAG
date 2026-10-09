@@ -29,6 +29,7 @@ dependencies = [
     "rich",
     "scikit-learn>=1.9.1",
     "sentence-transformers>=6.1.0",
+    "spacy>=3.8.16",
     "termcolor",
 ]
 
@@ -40,7 +41,8 @@ requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.ruff.lint]
-ignore = ["I001", "SIM117", "BLE001", "UP006", "UP035", "F401", "F841","N999"]
+extend-select = ["I"]
+ignore = ["SIM117", "BLE001", "UP006", "UP035", "F401", "F841", "N999"]
 
 [dependency-groups]
 dev = [

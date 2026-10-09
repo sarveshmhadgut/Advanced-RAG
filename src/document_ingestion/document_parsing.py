@@ -4,24 +4,31 @@ hierarchical sections based on heading markers.
 """
 
 import re
+import shutil
 import sys
-from typing import Any
 from pathlib import Path
+from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+from termcolor import colored
+
+ROOT: Path = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src import console
-from src.logger import logging
 from src.exception import MyException
+from src.logger import logging
 
-DOCUMENTS_DIRPATH = ROOT / "data" / "input" / "documents"
-PDFS_DIRPATH = ROOT / "data" / "input" / "pdfs"
+width = shutil.get_terminal_size().columns
+DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
 
-__all__ = ["parse_document"]
+__all__: list[str] = ["parse_document"]
 
 
-def parse_document(path: Path, text: str) -> list[dict[str, Any]]:
+def parse_document(
+    path: Path,
+    text: str,
+) -> list[dict[str, Any]]:
     """
     Parses a markdown-style document into structured sections by splitting
     on heading markers (e.g., #, ##, ###) and building a hierarchical title.
@@ -31,34 +38,40 @@ def parse_document(path: Path, text: str) -> list[dict[str, Any]]:
         text (str): The full text content of the document.
 
     Returns:
-        list[dict]:
+        list[dict[str, Any]]:
             - A list of section dictionaries, each containing:
                 - "path" (str): The source file path.
                 - "title" (str): The hierarchical heading trail joined by " > ".
                 - "text" (str): The body content under that heading.
-            - An empty list if the input text is empty or None.
+            - An empty list if the input text is empty.
 
     Raises:
-        MyException: If any error occurs during the document parsing process.
+        MyException: If inputs are invalid or document parsing fails.
     """
     try:
         logging.info("Parsing document...")
+
+        if not path:
+            raise ValueError("path must be provided")
+
+        if text is None:
+            raise ValueError("text cannot be None")
 
         if not text:
             return []
 
         sections: list[dict[str, Any]] = []
-        headings: list[str] = []
+        breadcrumbs: list[str] = []
         body: list[str] = []
 
         # Flush accumulated body lines into a section entry
-        def emit() -> None:
+        def flush() -> None:
             body_content = "\n".join(body).strip()
             if body_content:
                 sections.append(
                     {
                         "path": str(path),
-                        "title": " > ".join(headings),
+                        "title": " > ".join(breadcrumbs) if breadcrumbs else "Root",
                         "text": body_content,
                     }
                 )
@@ -68,17 +81,17 @@ def parse_document(path: Path, text: str) -> list[dict[str, Any]]:
             match = re.match(r"^(#+)\s+(.*)$", line)
             if match:
                 # Flush previous section before starting a new heading
-                emit()
+                flush()
 
                 # Determine heading depth and trim breadcrumb trail accordingly
                 sub = len(match.group(1))
-                header = match.group(2).title()
-                headings = headings[: sub - 1] + [header]
+                breadcrumb = match.group(2).title()
+                breadcrumbs = breadcrumbs[: sub - 1] + [breadcrumb]
             else:
                 body.append(line)
 
         # Flush any remaining content after the last heading
-        emit()
+        flush()
         logging.info("Document parsed.")
         return sections
 
@@ -102,13 +115,24 @@ def main() -> None:
         logging.info("Running document parsing pipeline...")
 
         files: list[Path] = sorted(
-            [*DOCUMENTS_DIRPATH.glob("*.md"), *DOCUMENTS_DIRPATH.glob("*.txt")]
+            [
+                *DOCUMENTS_DIRPATH.glob("*.md"),
+                *DOCUMENTS_DIRPATH.glob("*.txt"),
+            ]
         )
 
         for file in files:
+            filename = file.name
+            if not filename in ["products_and_pricing.md", "ai_engineering.md"]:
+                continue
+
             text: str = file.read_text(encoding="utf-8", errors="ignore")
             parsed_document: list[dict[str, Any]] = parse_document(path=file, text=text)
-            console.print_json(data=parsed_document)
+
+            print(colored("_" * width, "grey"), colored(filename.center(width), "blue"))
+            for doc in parsed_document:
+                console.print_json(data=doc)
+            print(colored("_" * width, "grey"))
 
         logging.info("Document parsing pipeline completed.")
 
