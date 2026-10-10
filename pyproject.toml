@@ -6,39 +6,42 @@ readme = "README.md"
 authors = [
     { name = "Sarvesh Mhadgut", email = "sarveshmhadgut@icloud.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "colorlog>=6.12.0",
     "deepeval>=4.2.8",
     "google-generativeai>=0.8.6",
-    "langchain>=1.4.3",
+    "langchain>=1.4.4",
     "langchain-community>=0.4.2",
-    "langchain-core>=1.6.6",
+    "langchain-core>=1.6.9",
     "langchain-experimental>=0.4.2",
     "langchain-google-genai>=4.4.0",
-    "langgraph>=1.2.13",
+    "langgraph>=1.2.14",
     "networkx>=3.7",
     "numpy>=2.5.3",
     "pandas>=3.0.6",
-    "pydantic>=2.13.5",
-    "pymupdf",
-    "pypdf>=6.19.0",
+    "pydantic>=2.14.0",
+    "pymupdf>=1.28.2",
+    "pypdf>=6.20.0",
     "python-dotenv>=1.2.4",
-    "ragas",
+    "ragas>=0.3.1",
     "rank-bm25>=0.2.2",
-    "rich",
+    "rich>=14.3.4",
     "scikit-learn>=1.9.1",
     "sentence-transformers>=6.1.0",
     "spacy>=3.8.16",
-    "termcolor",
+    "termcolor>=3.3.0",
 ]
 
 [project.scripts]
 advanced-rag = "advanced_rag:main"
 
 [build-system]
-requires = ["uv_build>=0.12.23,<0.13.0"]
+requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py314"
 
 [tool.ruff.lint]
 extend-select = ["I"]

@@ -12,14 +12,19 @@ from typing import Any
 from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+try:
+    width = shutil.get_terminal_size().columns
+    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
 
 __all__: list[str] = ["get_structural_splits", "parse_sections"]
 
@@ -100,9 +105,7 @@ def get_structural_splits(
         MyException: If arguments are invalid, the file does not exist, or splitting fails.
     """
     try:
-        logging.info(
-            f"Generating structural splits for {path.name if path else 'unknown'}..."
-        )
+        logging.info(f"Generating structural splits for {path.name if path else 'unknown'}...")
 
         if not path:
             raise ValueError("path must be provided")
@@ -114,9 +117,7 @@ def get_structural_splits(
             raise ValueError("max_split_size must be greater than zero")
 
         if overlap < 0 or overlap >= max_split_size:
-            raise ValueError(
-                "overlap must be non-negative and smaller than max_split_size"
-            )
+            raise ValueError("overlap must be non-negative and smaller than max_split_size")
 
         text: str = path.read_text(encoding="utf-8", errors="ignore")
         sections: list[tuple[str, str]] = parse_sections(text=text)

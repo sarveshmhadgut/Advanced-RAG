@@ -10,16 +10,21 @@ from pathlib import Path
 from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.document_ingestion.pdf_parsing import extract_pdf_text
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+try:
+    width = shutil.get_terminal_size().columns
+    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
 
 __all__: list[str] = ["clean_document"]
 
@@ -218,6 +223,9 @@ def remove_page_artifacts(text: str) -> str:
         # Standalone page numbers.
         text = re.sub(r"(?m)^[ \t]*\d{1,4}[ \t]*$", "", text)
 
+        # Remove repeated dot sequences (such as dot leaders in tables of contents).
+        text = re.sub(r"(?:\.[ \t]*){2,}", " ", text)
+
         # Page X of Y.
         text = re.sub(r"(?im)^[ \t]*page[ \t]+\d+[ \t]+of[ \t]+\d+[ \t]*$", "", text)
 
@@ -299,9 +307,7 @@ def main() -> None:
 
         cleaned_text: str = clean_document(text=raw_text)
 
-        print(
-            colored("_" * width, "grey"), colored("Cleaned text".center(width), "blue")
-        )
+        print(colored("_" * width, "grey"), colored("Cleaned text".center(width), "blue"))
         console.print(cleaned_text)
         print(colored("_" * width, "grey"))
 

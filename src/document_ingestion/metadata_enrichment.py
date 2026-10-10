@@ -15,22 +15,28 @@ import yaml
 from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
-DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+try:
+    width = shutil.get_terminal_size().columns
+    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+    PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
+    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
 
-# Load topics from centralized config, falling back to empty dict if file is empty
-with open(PARAMS_FILEPATH, "r") as f:
-    params = yaml.safe_load(f) or {}
+    # Load topics from centralized config, falling back to empty dict if file is empty
+    with open(PARAMS_FILEPATH, "r") as f:
+        params = yaml.safe_load(f) or {}
 
-TOPICS: list[str] = params.get("topics", [])
+    TOPICS: list[str] = params.get("topics", [])
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
+
 __all__: list[str] = ["enrich_metadata", "infer_topics"]
 
 
@@ -122,16 +128,8 @@ def enrich_metadata(
             "title": path.stem.replace("_", " ").replace("-", " ").title(),
             "extension": path.suffix.lower(),
             # st_birthtime is macOS-specific; fall back to st_ctime on Linux
-            "created_date": datetime.datetime.fromtimestamp(
-                getattr(stats, "st_birthtime", stats.st_ctime), datetime.UTC
-            )
-            .date()
-            .isoformat(),
-            "modified_date": datetime.datetime.fromtimestamp(
-                getattr(stats, "st_mtime", stats.st_ctime), datetime.UTC
-            )
-            .date()
-            .isoformat(),
+            "created_date": datetime.datetime.fromtimestamp(getattr(stats, "st_birthtime", stats.st_ctime), datetime.UTC).date().isoformat(),
+            "modified_date": datetime.datetime.fromtimestamp(getattr(stats, "st_mtime", stats.st_ctime), datetime.UTC).date().isoformat(),
             "file_size": stats.st_size,
             "character_count": len(text),
             "word_count": len(text.split()),

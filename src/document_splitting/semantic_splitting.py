@@ -1,24 +1,26 @@
 """
 Provides semantic document splitting functionality using spaCy sentence segmentation
 and Google Generative AI embeddings similarity thresholds.
+
+Includes utilities for stopword filtering with negation retention, sentence
+segmentation, pairwise similarity scoring, and LangSmith tracing observability.
 """
 
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import spacy
 from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langsmith import traceable
 from spacy.tokens import Doc
 from termcolor import colored
 
-load_dotenv()
-
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.document_ingestion.document_cleaning import clean_document
@@ -26,27 +28,35 @@ from src.document_ingestion.pdf_parsing import extract_pdf_text
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-PAGE_NO = 13
-PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+try:
+    load_dotenv()
+
+    WIDTH: int = shutil.get_terminal_size().columns
+    PAGE_NO: int = 13
+    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+
+    nlp: spacy.Language = spacy.load("en_core_web_sm")
+    nlp.Defaults.stop_words.discard("not")
+
+    EMBEDDING_MODEL: GoogleGenerativeAIEmbeddings = GoogleGenerativeAIEmbeddings(
+        model="gemini-embedding-001",
+        output_dimensionality=384,
+    )
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
 
 __all__: list[str] = [
+    "EMBEDDING_MODEL",
     "get_semantic_splits",
     "get_sentences",
     "get_similarities_scores",
     "remove_stopwords",
 ]
 
-nlp: spacy.Language = spacy.load("en_core_web_sm")
-nlp.Defaults.stop_words.remove("not")
 
-EMBEDDING_MODEL: GoogleGenerativeAIEmbeddings = GoogleGenerativeAIEmbeddings(
-    model="gemini-embedding-001",
-    output_dimensionality=384,
-)
-
-
+@traceable(name="remove_stopwords")
 def remove_stopwords(text: str) -> str:
     """
     Remove English stopwords from text while retaining negation words like 'not'.
@@ -55,27 +65,26 @@ def remove_stopwords(text: str) -> str:
         text (str): The input text to process.
 
     Returns:
-        str: Text with stopwords removed.
+        str: Text with stopwords removed. Returns an empty string if input is empty.
 
     Raises:
         MyException: If text is None or stopword removal fails.
     """
     try:
-        logging.info("Removing stopwords...")
+        logging.info("Removing stopwords from text...")
 
         if text is None:
             raise ValueError("text cannot be None")
 
-        if not text:
+        if not text.strip():
+            logging.info("Input text is empty; returning empty string.")
             return ""
 
         doc: Doc = nlp(text=text)
         doc.vocab["not"].is_stop = False
 
-        filtered_text: str = " ".join(
-            [token.text for token in doc if not token.is_stop]
-        )
-        logging.info("Stopwords removed.")
+        filtered_text: str = " ".join([token.text for token in doc if not token.is_stop])
+        logging.info("Stopwords removed successfully.")
         return filtered_text
 
     except Exception as exc:
@@ -83,6 +92,7 @@ def remove_stopwords(text: str) -> str:
         raise MyException(exc, sys) from exc
 
 
+@traceable(name="get_sentences")
 def get_sentences(text: str) -> list[str]:
     """
     Segment input text into individual sentences using spaCy sentence boundary detection.
@@ -102,15 +112,14 @@ def get_sentences(text: str) -> list[str]:
         if text is None:
             raise ValueError("text cannot be None")
 
-        if not text:
+        if not text.strip():
+            logging.info("Input text is empty; returning empty sentence list.")
             return []
 
         doc: Doc = nlp(text=text)
-        sentences: list[str] = [
-            sentence.text.strip() for sentence in doc.sents if sentence.text.strip()
-        ]
+        sentences: list[str] = [sentence.text.strip() for sentence in doc.sents if sentence.text.strip()]
 
-        logging.info(f"Segmented {len(sentences)} sentences.")
+        logging.info(f"Segmented {len(sentences)} sentences successfully.")
         return sentences
 
     except Exception as exc:
@@ -118,6 +127,7 @@ def get_sentences(text: str) -> list[str]:
         raise MyException(exc, sys) from exc
 
 
+@traceable(name="get_similarities_scores")
 def get_similarities_scores(
     sentences: list[str],
     model: GoogleGenerativeAIEmbeddings,
@@ -127,7 +137,7 @@ def get_similarities_scores(
 
     Args:
         sentences (list[str]): List of sentences to compare consecutively.
-        model (GoogleGenerativeAIEmbeddings): Embedding model instance.
+        model (GoogleGenerativeAIEmbeddings): Embedding model instance used to generate vectors.
 
     Returns:
         list[float]: A list of float cosine similarity scores between consecutive pairs.
@@ -137,7 +147,7 @@ def get_similarities_scores(
         MyException: If inputs are invalid or similarity score computation fails.
     """
     try:
-        logging.info("Calculating similarity scores across sentences...")
+        logging.info(f"Calculating similarity scores for {len(sentences) if sentences is not None else 0} sentences...")
 
         if sentences is None:
             raise ValueError("sentences cannot be None")
@@ -146,6 +156,7 @@ def get_similarities_scores(
             raise ValueError("model cannot be None")
 
         if len(sentences) < 2:
+            logging.info(f"Fewer than 2 sentences provided ({len(sentences)}); returning empty similarity list.")
             return []
 
         raw_embeddings: list[list[float]] = model.embed_documents(sentences)
@@ -154,11 +165,9 @@ def get_similarities_scores(
         norms: np.ndarray = np.linalg.norm(embeddings, axis=1, keepdims=True)
         normalized_embeddings: np.ndarray = embeddings / np.maximum(norms, 1e-12)
 
-        similarities: np.ndarray = np.sum(
-            normalized_embeddings[:-1] * normalized_embeddings[1:], axis=1
-        )
+        similarities: np.ndarray = np.sum(normalized_embeddings[:-1] * normalized_embeddings[1:], axis=1)
         similarity_scores: list[float] = [float(s) for s in similarities.tolist()]
-        logging.info(f"Computed {len(similarity_scores)} similarity scores.")
+        logging.info(f"Computed {len(similarity_scores)} similarity scores successfully.")
 
         return similarity_scores
 
@@ -167,6 +176,7 @@ def get_similarities_scores(
         raise MyException(exc, sys) from exc
 
 
+@traceable(name="get_semantic_splits")
 def get_semantic_splits(
     text: str,
     similarity_threshold: float = 0.8,
@@ -179,16 +189,16 @@ def get_semantic_splits(
         text (str): The document text to split.
         similarity_threshold (float, optional): Cosine similarity threshold below which a split
             boundary is triggered. Defaults to 0.8.
-        max_split_size (int, optional): Maximum character length of a split chunk. Defaults to 200.
+        max_split_size (int, optional): Maximum character length of a split chunk. Defaults to 600.
 
     Returns:
-        list[str]: A list of semantic text chunks. Returns empty list if text is empty.
+        list[str]: A list of semantic text chunks. Returns an empty list if text is empty.
 
     Raises:
         MyException: If inputs are invalid or semantic splitting fails.
     """
     try:
-        logging.info("Generating semantic splits...")
+        logging.info(f"Generating semantic splits (similarity_threshold={similarity_threshold}, max_split_size={max_split_size})...")
 
         if text is None:
             raise ValueError("text cannot be None")
@@ -199,16 +209,16 @@ def get_semantic_splits(
         if max_split_size <= 0:
             raise ValueError("max_split_size must be greater than zero")
 
-        if not text:
+        if not text.strip():
+            logging.info("Input text is empty; returning empty splits list.")
             return []
 
         sentences: list[str] = get_sentences(text=text)
         if not sentences:
+            logging.info("No sentences extracted from text; returning empty splits list.")
             return []
 
-        similarities: list[float] = get_similarities_scores(
-            sentences=sentences, model=EMBEDDING_MODEL
-        )
+        similarities: list[float] = get_similarities_scores(sentences=sentences, model=EMBEDDING_MODEL)
 
         splits: list[str] = []
         current_split: str = sentences[0]
@@ -225,7 +235,7 @@ def get_semantic_splits(
         if current_split:
             splits.append(current_split)
 
-        logging.info(f"Generated {len(splits)} semantic splits.")
+        logging.info(f"Generated {len(splits)} semantic splits successfully.")
         return splits
 
     except Exception as exc:
@@ -235,30 +245,38 @@ def get_semantic_splits(
 
 def main() -> None:
     """
-    Demonstrates semantic splitting pipeline on an extracted PDF document.
+    Demonstrates semantic splitting pipeline on extracted PDF documents.
+
+    Reads PDF files from the configured PDF directory, cleans extracted text,
+    splits text semantically using embedding similarity, and prints sample splits.
 
     Returns:
         None
 
     Raises:
-        MyException: If the semantic splitting pipeline fails.
+        MyException: If the semantic splitting demonstration pipeline fails.
     """
     try:
-        logging.info("Running semantic splitting pipeline...")
+        logging.info("Running semantic splitting pipeline demonstration...")
+
+        if not PDFS_DIRPATH.exists():
+            raise FileNotFoundError(f"PDF directory does not exist: {PDFS_DIRPATH}")
 
         pdfs: list[Path] = sorted(PDFS_DIRPATH.glob("*.pdf"))[:2]
+        if not pdfs:
+            logging.warning(f"No PDF files found in {PDFS_DIRPATH}.")
+            return
 
         for pdf in pdfs:
+            logging.info(f"Processing PDF file: {pdf.name} (pages up to {PAGE_NO})...")
             text: str = extract_pdf_text(file=pdf, end_page=PAGE_NO)
             clean_text: str = clean_document(text=text)
 
             splits: list[str] = get_semantic_splits(text=clean_text)
 
-            filename = pdf.name
-
             print(
-                colored("_" * width, "grey"),
-                colored(f"{filename}".center(width), "blue"),
+                colored("_" * WIDTH, "grey"),
+                colored(f"{pdf.name}".center(WIDTH), "blue"),
             )
             console.print_json(
                 data={
@@ -266,9 +284,9 @@ def main() -> None:
                     "splits": splits[:5],
                 }
             )
-            print(colored("_" * width, "grey"))
+            print(colored("_" * WIDTH, "grey"))
 
-        logging.info("Semantic splitting pipeline completed.")
+        logging.info("Semantic splitting pipeline demonstration completed successfully.")
 
     except Exception as exc:
         logging.error(f"Failed to run semantic splitting pipeline: {exc}")

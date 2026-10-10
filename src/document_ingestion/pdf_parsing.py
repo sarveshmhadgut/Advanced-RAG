@@ -13,16 +13,21 @@ import pymupdf
 from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
-PYMUPDF_TEXT_INDEX: int = 4
+try:
+    width = shutil.get_terminal_size().columns
+    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+    PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
+    PYMUPDF_TEXT_INDEX: int = 4
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
 
 __all__: list[str] = ["extract_pdf_text", "label_line", "parse_pdf"]
 
@@ -107,14 +112,8 @@ def parse_pdf(path: Path) -> list[dict[str, Any]]:
 
                 for block_number, block in enumerate(blocks, 1):
                     text: str = block[PYMUPDF_TEXT_INDEX].strip()
-                    lines: list[str] = [
-                        line for line in text.splitlines() if line.strip()
-                    ]
-                    kind: str = (
-                        "table"
-                        if any(label_line(line) for line in lines)
-                        else label_line(text)
-                    )
+                    lines: list[str] = [line for line in text.splitlines() if line.strip()]
+                    kind: str = "table" if any(label_line(line) for line in lines) else label_line(text)
 
                     entry: dict[str, Any] = {
                         "source": str(path),
@@ -163,9 +162,7 @@ def extract_pdf_text(
             raise FileNotFoundError(f"File not found: {file}")
 
         if file.suffix.lower() != ".pdf":
-            raise ValueError(
-                f"Expected a PDF file (.pdf), but got '{file.suffix}': {file.name}"
-            )
+            raise ValueError(f"Expected a PDF file (.pdf), but got '{file.suffix}': {file.name}")
 
         if start_page is not None and start_page <= 0:
             raise ValueError("start_page must be greater than zero")
@@ -182,9 +179,7 @@ def extract_pdf_text(
             total_pages: int = len(pdf)
 
             if start_page is not None and start_page > total_pages:
-                raise ValueError(
-                    f"start_page ({start_page}) exceeds total document pages ({total_pages})"
-                )
+                raise ValueError(f"start_page ({start_page}) exceeds total document pages ({total_pages})")
 
             for page_num, page in enumerate(pdf, start=1):
                 if start_page and page_num < start_page:

@@ -12,15 +12,20 @@ from typing import Any
 from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src import console
 from src.exception import MyException
 from src.logger import logging
 
-width = shutil.get_terminal_size().columns
-DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
-PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+try:
+    width = shutil.get_terminal_size().columns
+    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
+except Exception as e:
+    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    raise MyException(e, sys) from e
 
 __all__: list[str] = ["parse_document"]
 

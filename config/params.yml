@@ -83,3 +83,6 @@ topics:
   - Git
   - Documentation
   - Other
+
+LANGSMITH_PROJECT: advanced-rag
+LANGCHAIN_TRACING_V2: true
