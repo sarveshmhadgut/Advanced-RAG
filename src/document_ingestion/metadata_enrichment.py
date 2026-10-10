@@ -128,8 +128,16 @@ def enrich_metadata(
             "title": path.stem.replace("_", " ").replace("-", " ").title(),
             "extension": path.suffix.lower(),
             # st_birthtime is macOS-specific; fall back to st_ctime on Linux
-            "created_date": datetime.datetime.fromtimestamp(getattr(stats, "st_birthtime", stats.st_ctime), datetime.UTC).date().isoformat(),
-            "modified_date": datetime.datetime.fromtimestamp(getattr(stats, "st_mtime", stats.st_ctime), datetime.UTC).date().isoformat(),
+            "created_date": datetime.datetime.fromtimestamp(
+                getattr(stats, "st_birthtime", stats.st_ctime), datetime.UTC
+            )
+            .date()
+            .isoformat(),
+            "modified_date": datetime.datetime.fromtimestamp(
+                getattr(stats, "st_mtime", stats.st_ctime), datetime.UTC
+            )
+            .date()
+            .isoformat(),
             "file_size": stats.st_size,
             "character_count": len(text),
             "word_count": len(text.split()),

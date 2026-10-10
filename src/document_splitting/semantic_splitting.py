@@ -83,7 +83,9 @@ def remove_stopwords(text: str) -> str:
         doc: Doc = nlp(text=text)
         doc.vocab["not"].is_stop = False
 
-        filtered_text: str = " ".join([token.text for token in doc if not token.is_stop])
+        filtered_text: str = " ".join(
+            [token.text for token in doc if not token.is_stop]
+        )
         logging.info("Stopwords removed successfully.")
         return filtered_text
 
@@ -117,7 +119,9 @@ def get_sentences(text: str) -> list[str]:
             return []
 
         doc: Doc = nlp(text=text)
-        sentences: list[str] = [sentence.text.strip() for sentence in doc.sents if sentence.text.strip()]
+        sentences: list[str] = [
+            sentence.text.strip() for sentence in doc.sents if sentence.text.strip()
+        ]
 
         logging.info(f"Segmented {len(sentences)} sentences successfully.")
         return sentences
@@ -147,7 +151,9 @@ def get_similarities_scores(
         MyException: If inputs are invalid or similarity score computation fails.
     """
     try:
-        logging.info(f"Calculating similarity scores for {len(sentences) if sentences is not None else 0} sentences...")
+        logging.info(
+            f"Calculating similarity scores for {len(sentences) if sentences is not None else 0} sentences..."
+        )
 
         if sentences is None:
             raise ValueError("sentences cannot be None")
@@ -156,7 +162,9 @@ def get_similarities_scores(
             raise ValueError("model cannot be None")
 
         if len(sentences) < 2:
-            logging.info(f"Fewer than 2 sentences provided ({len(sentences)}); returning empty similarity list.")
+            logging.info(
+                f"Fewer than 2 sentences provided ({len(sentences)}); returning empty similarity list."
+            )
             return []
 
         raw_embeddings: list[list[float]] = model.embed_documents(sentences)
@@ -165,9 +173,13 @@ def get_similarities_scores(
         norms: np.ndarray = np.linalg.norm(embeddings, axis=1, keepdims=True)
         normalized_embeddings: np.ndarray = embeddings / np.maximum(norms, 1e-12)
 
-        similarities: np.ndarray = np.sum(normalized_embeddings[:-1] * normalized_embeddings[1:], axis=1)
+        similarities: np.ndarray = np.sum(
+            normalized_embeddings[:-1] * normalized_embeddings[1:], axis=1
+        )
         similarity_scores: list[float] = [float(s) for s in similarities.tolist()]
-        logging.info(f"Computed {len(similarity_scores)} similarity scores successfully.")
+        logging.info(
+            f"Computed {len(similarity_scores)} similarity scores successfully."
+        )
 
         return similarity_scores
 
@@ -198,7 +210,9 @@ def get_semantic_splits(
         MyException: If inputs are invalid or semantic splitting fails.
     """
     try:
-        logging.info(f"Generating semantic splits (similarity_threshold={similarity_threshold}, max_split_size={max_split_size})...")
+        logging.info(
+            f"Generating semantic splits (similarity_threshold={similarity_threshold}, max_split_size={max_split_size})..."
+        )
 
         if text is None:
             raise ValueError("text cannot be None")
@@ -215,10 +229,14 @@ def get_semantic_splits(
 
         sentences: list[str] = get_sentences(text=text)
         if not sentences:
-            logging.info("No sentences extracted from text; returning empty splits list.")
+            logging.info(
+                "No sentences extracted from text; returning empty splits list."
+            )
             return []
 
-        similarities: list[float] = get_similarities_scores(sentences=sentences, model=EMBEDDING_MODEL)
+        similarities: list[float] = get_similarities_scores(
+            sentences=sentences, model=EMBEDDING_MODEL
+        )
 
         splits: list[str] = []
         current_split: str = sentences[0]
@@ -286,7 +304,9 @@ def main() -> None:
             )
             print(colored("_" * WIDTH, "grey"))
 
-        logging.info("Semantic splitting pipeline demonstration completed successfully.")
+        logging.info(
+            "Semantic splitting pipeline demonstration completed successfully."
+        )
 
     except Exception as exc:
         logging.error(f"Failed to run semantic splitting pipeline: {exc}")

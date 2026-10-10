@@ -105,7 +105,9 @@ def get_structural_splits(
         MyException: If arguments are invalid, the file does not exist, or splitting fails.
     """
     try:
-        logging.info(f"Generating structural splits for {path.name if path else 'unknown'}...")
+        logging.info(
+            f"Generating structural splits for {path.name if path else 'unknown'}..."
+        )
 
         if not path:
             raise ValueError("path must be provided")
@@ -117,7 +119,9 @@ def get_structural_splits(
             raise ValueError("max_split_size must be greater than zero")
 
         if overlap < 0 or overlap >= max_split_size:
-            raise ValueError("overlap must be non-negative and smaller than max_split_size")
+            raise ValueError(
+                "overlap must be non-negative and smaller than max_split_size"
+            )
 
         text: str = path.read_text(encoding="utf-8", errors="ignore")
         sections: list[tuple[str, str]] = parse_sections(text=text)

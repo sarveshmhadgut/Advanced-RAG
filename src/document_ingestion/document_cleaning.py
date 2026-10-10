@@ -307,7 +307,9 @@ def main() -> None:
 
         cleaned_text: str = clean_document(text=raw_text)
 
-        print(colored("_" * width, "grey"), colored("Cleaned text".center(width), "blue"))
+        print(
+            colored("_" * width, "grey"), colored("Cleaned text".center(width), "blue")
+        )
         console.print(cleaned_text)
         print(colored("_" * width, "grey"))
 

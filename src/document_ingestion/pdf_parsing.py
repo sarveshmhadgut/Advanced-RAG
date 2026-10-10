@@ -112,8 +112,14 @@ def parse_pdf(path: Path) -> list[dict[str, Any]]:
 
                 for block_number, block in enumerate(blocks, 1):
                     text: str = block[PYMUPDF_TEXT_INDEX].strip()
-                    lines: list[str] = [line for line in text.splitlines() if line.strip()]
-                    kind: str = "table" if any(label_line(line) for line in lines) else label_line(text)
+                    lines: list[str] = [
+                        line for line in text.splitlines() if line.strip()
+                    ]
+                    kind: str = (
+                        "table"
+                        if any(label_line(line) for line in lines)
+                        else label_line(text)
+                    )
 
                     entry: dict[str, Any] = {
                         "source": str(path),
@@ -162,7 +168,9 @@ def extract_pdf_text(
             raise FileNotFoundError(f"File not found: {file}")
 
         if file.suffix.lower() != ".pdf":
-            raise ValueError(f"Expected a PDF file (.pdf), but got '{file.suffix}': {file.name}")
+            raise ValueError(
+                f"Expected a PDF file (.pdf), but got '{file.suffix}': {file.name}"
+            )
 
         if start_page is not None and start_page <= 0:
             raise ValueError("start_page must be greater than zero")
@@ -179,7 +187,9 @@ def extract_pdf_text(
             total_pages: int = len(pdf)
 
             if start_page is not None and start_page > total_pages:
-                raise ValueError(f"start_page ({start_page}) exceeds total document pages ({total_pages})")
+                raise ValueError(
+                    f"start_page ({start_page}) exceeds total document pages ({total_pages})"
+                )
 
             for page_num, page in enumerate(pdf, start=1):
                 if start_page and page_num < start_page:
