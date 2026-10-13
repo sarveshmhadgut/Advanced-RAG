@@ -1,264 +1,297 @@
 """
 Provides semantic document splitting functionality using spaCy sentence segmentation
 and Google Generative AI embeddings similarity thresholds.
-
-Includes utilities for stopword filtering with negation retention, sentence
-segmentation, pairwise similarity scoring, and LangSmith tracing observability.
 """
 
-import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
-import numpy as np
-import spacy
 from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langsmith import traceable
-from spacy.tokens import Doc
-from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import console
-from src.document_ingestion.document_cleaning import clean_document
-from src.document_ingestion.pdf_parsing import extract_pdf_text
-from src.exception import MyException
+from src.document_ingestion.metadata_enrichment import enrich_metadata
+from src.document_ingestion.pdf_cleaning import clean_pdf
+from src.document_ingestion.pdf_parsing import parse_pdf
+from src.exception import EmbeddingError, MyException, ValidationError
 from src.logger import logging
+from src.schema import DocumentMetadata, DocumentSection, SplitRecord
+from src.utils import (
+    PARAMS_FILEPATH,
+    PDFS_DIRPATH,
+    console,
+    extract_pdf_text,
+    generate_uuid,
+    get_embedding_model,
+    get_similarities_scores,
+    get_spacy_sentences,
+    get_terminal_width,
+    load_yaml_file,
+    print_divider,
+    print_header,
+)
 
 try:
     load_dotenv()
 
-    WIDTH: int = shutil.get_terminal_size().columns
-    PAGE_NO: int = 13
-    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
-
-    nlp: spacy.Language = spacy.load("en_core_web_sm")
-    nlp.Defaults.stop_words.discard("not")
-
-    EMBEDDING_MODEL: GoogleGenerativeAIEmbeddings = GoogleGenerativeAIEmbeddings(
-        model="gemini-embedding-001",
-        output_dimensionality=384,
+    WIDTH: int = get_terminal_width()
+    PARAMS: dict[str, Any] = (
+        load_yaml_file(PARAMS_FILEPATH)
+        .get("document_splitting", {})
+        .get("semantic", {})
     )
+
+    SIMILARITY_THRESHOLD: float = float(PARAMS.get("similarity_threshold", 0.8))
+    MAX_SPLIT_SIZE: int = int(PARAMS.get("max_split_size", 600))
+    START_PAGE: int | None = (
+        int(PARAMS["start_page"]) if PARAMS.get("start_page") is not None else None
+    )
+    END_PAGE: int | None = (
+        int(PARAMS["end_page"]) if PARAMS.get("end_page") is not None else None
+    )
+    PDF_NAME: str | None = (
+        str(PARAMS.get("pdf_name")) if PARAMS.get("pdf_name") else None
+    )
+
 except Exception as e:
-    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    logging.info(f"Failed to initialize semantic splitting module dependencies: {e}")
     raise MyException(e, sys) from e
 
-__all__: list[str] = [
-    "EMBEDDING_MODEL",
-    "get_semantic_splits",
-    "get_sentences",
-    "get_similarities_scores",
-    "remove_stopwords",
-]
-
-
-@traceable(name="remove_stopwords")
-def remove_stopwords(text: str) -> str:
-    """
-    Remove English stopwords from text while retaining negation words like 'not'.
-
-    Args:
-        text (str): The input text to process.
-
-    Returns:
-        str: Text with stopwords removed. Returns an empty string if input is empty.
-
-    Raises:
-        MyException: If text is None or stopword removal fails.
-    """
-    try:
-        logging.info("Removing stopwords from text...")
-
-        if text is None:
-            raise ValueError("text cannot be None")
-
-        if not text.strip():
-            logging.info("Input text is empty; returning empty string.")
-            return ""
-
-        doc: Doc = nlp(text=text)
-        doc.vocab["not"].is_stop = False
-
-        filtered_text: str = " ".join(
-            [token.text for token in doc if not token.is_stop]
-        )
-        logging.info("Stopwords removed successfully.")
-        return filtered_text
-
-    except Exception as exc:
-        logging.error(f"Failed to remove stopwords: {exc}")
-        raise MyException(exc, sys) from exc
-
-
-@traceable(name="get_sentences")
-def get_sentences(text: str) -> list[str]:
-    """
-    Segment input text into individual sentences using spaCy sentence boundary detection.
-
-    Args:
-        text (str): The input text to segment into sentences.
-
-    Returns:
-        list[str]: A list of non-empty sentence strings. Returns an empty list if text is empty.
-
-    Raises:
-        MyException: If text is None or sentence segmentation fails.
-    """
-    try:
-        logging.info("Segmenting text into sentences...")
-
-        if text is None:
-            raise ValueError("text cannot be None")
-
-        if not text.strip():
-            logging.info("Input text is empty; returning empty sentence list.")
-            return []
-
-        doc: Doc = nlp(text=text)
-        sentences: list[str] = [
-            sentence.text.strip() for sentence in doc.sents if sentence.text.strip()
-        ]
-
-        logging.info(f"Segmented {len(sentences)} sentences successfully.")
-        return sentences
-
-    except Exception as exc:
-        logging.error(f"Failed to segment sentences: {exc}")
-        raise MyException(exc, sys) from exc
-
-
-@traceable(name="get_similarities_scores")
-def get_similarities_scores(
-    sentences: list[str],
-    model: GoogleGenerativeAIEmbeddings,
-) -> list[float]:
-    """
-    Calculate consecutive pair-wise cosine similarity scores across a list of sentences.
-
-    Args:
-        sentences (list[str]): List of sentences to compare consecutively.
-        model (GoogleGenerativeAIEmbeddings): Embedding model instance used to generate vectors.
-
-    Returns:
-        list[float]: A list of float cosine similarity scores between consecutive pairs.
-            Returns an empty list if fewer than 2 sentences are provided.
-
-    Raises:
-        MyException: If inputs are invalid or similarity score computation fails.
-    """
-    try:
-        logging.info(
-            f"Calculating similarity scores for {len(sentences) if sentences is not None else 0} sentences..."
-        )
-
-        if sentences is None:
-            raise ValueError("sentences cannot be None")
-
-        if model is None:
-            raise ValueError("model cannot be None")
-
-        if len(sentences) < 2:
-            logging.info(
-                f"Fewer than 2 sentences provided ({len(sentences)}); returning empty similarity list."
-            )
-            return []
-
-        raw_embeddings: list[list[float]] = model.embed_documents(sentences)
-        embeddings: np.ndarray = np.asarray(raw_embeddings, dtype=np.float32)
-
-        norms: np.ndarray = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        normalized_embeddings: np.ndarray = embeddings / np.maximum(norms, 1e-12)
-
-        similarities: np.ndarray = np.sum(
-            normalized_embeddings[:-1] * normalized_embeddings[1:], axis=1
-        )
-        similarity_scores: list[float] = [float(s) for s in similarities.tolist()]
-        logging.info(
-            f"Computed {len(similarity_scores)} similarity scores successfully."
-        )
-
-        return similarity_scores
-
-    except Exception as exc:
-        logging.error(f"Failed to get similarity scores: {exc}")
-        raise MyException(exc, sys) from exc
+__all__: list[str] = ["get_semantic_splits"]
 
 
 @traceable(name="get_semantic_splits")
 def get_semantic_splits(
-    text: str,
-    similarity_threshold: float = 0.8,
-    max_split_size: int = 600,
-) -> list[str]:
+    document: list[DocumentSection] | str,
+    metadata: DocumentMetadata | None = None,
+    similarity_threshold: float = SIMILARITY_THRESHOLD,
+    max_split_size: int = MAX_SPLIT_SIZE,
+    model: GoogleGenerativeAIEmbeddings | None = None,
+) -> list[SplitRecord]:
     """
-    Split text into semantically cohesive chunks based on sentence embedding similarity and size limit.
+    Split a structured document or raw text into semantically cohesive splits based
+    on sentence embedding similarity and maximum split size limit, embedding document
+    and split metadata into each returned record.
 
     Args:
-        text (str): The document text to split.
+        document (list[DocumentSection] | str): List of parsed document sections or raw text.
+        metadata (DocumentMetadata | None, optional): Enriched document-level metadata to embed.
+            Defaults to None.
         similarity_threshold (float, optional): Cosine similarity threshold below which a split
-            boundary is triggered. Defaults to 0.8.
-        max_split_size (int, optional): Maximum character length of a split chunk. Defaults to 600.
+            boundary is triggered. Defaults to SIMILARITY_THRESHOLD.
+        max_split_size (int, optional): Maximum character length of a split.
+            Defaults to MAX_SPLIT_SIZE.
+        model (GoogleGenerativeAIEmbeddings | None, optional): Embedding model to use.
+            Defaults to the lazily initialized default model.
 
     Returns:
-        list[str]: A list of semantic text chunks. Returns an empty list if text is empty.
+        list[SplitRecord]: A list of semantically cohesive text splits with embedded metadata.
+            Returns an empty list if the document is empty or contains no extractable sentences.
 
     Raises:
-        MyException: If inputs are invalid or semantic splitting fails.
+        ValidationError: If inputs are invalid.
+        EmbeddingError: If semantic splitting fails.
     """
     try:
         logging.info(
             f"Generating semantic splits (similarity_threshold={similarity_threshold}, max_split_size={max_split_size})..."
         )
 
-        if text is None:
-            raise ValueError("text cannot be None")
+        if document is None:
+            raise ValidationError("document cannot be None", sys)
 
         if not (0.0 <= similarity_threshold <= 1.0):
-            raise ValueError("similarity_threshold must be between 0.0 and 1.0")
+            raise ValidationError(
+                f"similarity_threshold must be between 0.0 and 1.0, got {similarity_threshold}",
+                sys,
+            )
 
         if max_split_size <= 0:
-            raise ValueError("max_split_size must be greater than zero")
-
-        if not text.strip():
-            logging.info("Input text is empty; returning empty splits list.")
-            return []
-
-        sentences: list[str] = get_sentences(text=text)
-        if not sentences:
-            logging.info(
-                "No sentences extracted from text; returning empty splits list."
+            raise ValidationError(
+                f"max_split_size must be greater than zero, got {max_split_size}",
+                sys,
             )
+
+        document_metadata: dict[str, Any] = dict(metadata or {})
+        if not document_metadata and isinstance(document, list) and document:
+            first_document = document[0]
+            if isinstance(first_document, dict):
+                first_meta: dict[str, Any] = first_document.get("metadata", {})
+                document_metadata = dict(first_meta.get("document_metadata") or {})
+
+        sections: list[DocumentSection]
+        if isinstance(document, str):
+            sections = [
+                {
+                    "id": "",
+                    "text": document.strip(),
+                    "metadata": {
+                        "section_metadata": {},
+                        "document_metadata": document_metadata,
+                    },
+                }
+            ]
+        elif isinstance(document, list):
+            sections = document
+        else:
+            raise ValidationError(
+                f"document must be a list of DocumentSection or str, got {type(document).__name__}",
+                sys,
+            )
+
+        sentences: list[tuple[str, str, str, dict[str, Any]]] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            text: str = str(section.get("text", "")).strip()
+            if not text:
+                continue
+
+            section_id: str = str(section.get("id", ""))
+            entry_metadata: dict[str, Any] = section.get("metadata", {})
+            section_metadata: dict[str, Any] = dict(
+                entry_metadata.get("section_metadata") or {}
+            )
+            if not section_metadata and "document_metadata" not in entry_metadata:
+                section_metadata = dict(entry_metadata)
+
+            document_metadata = dict(
+                entry_metadata.get("document_metadata") or document_metadata
+            )
+            breadcrumb: str = str(
+                section.get("title")
+                or section_metadata.get("title")
+                or document_metadata.get("title", "")
+            )
+            section_metadata = {
+                "section_metadata": section_metadata,
+                "document_metadata": document_metadata,
+            }
+
+            for sentence in get_spacy_sentences(text=text):
+                sentences.append((sentence, section_id, breadcrumb, section_metadata))
+
+        if not sentences:
+            logging.info("No sentences found in document; returning empty splits list.")
             return []
 
+        if len(sentences) == 1:
+            logging.info(
+                "Single sentence document; returning sentence as single split."
+            )
+            split_text, section_id, breadcrumb, section_metadata = sentences[0]
+            return [
+                {
+                    "id": generate_uuid(name=f"{section_id}_{breadcrumb}_{split_text}"),
+                    "title": breadcrumb,
+                    "text": split_text,
+                    "metadata": {
+                        "split_metadata": {
+                            "character_count": len(split_text),
+                            "word_count": len(split_text.split()),
+                        },
+                        "section_metadata": {
+                            "section_id": section_id,
+                            **(section_metadata.get("section_metadata") or {}),
+                        },
+                        "document_metadata": section_metadata.get(
+                            "document_metadata", {}
+                        ),
+                    },
+                }
+            ]
+
+        sentences_list: list[str] = [sentence for sentence, _, _, _ in sentences]
+        active_model: GoogleGenerativeAIEmbeddings = model or get_embedding_model()
         similarities: list[float] = get_similarities_scores(
-            sentences=sentences, model=EMBEDDING_MODEL
+            sentences=sentences_list, model=active_model
         )
+        splits: list[SplitRecord] = []
+        current_split: str = sentences_list[0]
+        current_section_id: str = sentences[0][1]
+        current_breadcrumb: str = sentences[0][2]
+        current_section_metadata: dict[str, Any] = sentences[0][3]
 
-        splits: list[str] = []
-        current_split: str = sentences[0]
-
-        for similarity, sentence in zip(similarities, sentences[1:]):
+        for similarity, (sentence, section_id, breadcrumb, section_metadata) in zip(
+            similarities, sentences[1:]
+        ):
             split_size: int = len(current_split) + len(sentence) + 1
 
             if similarity < similarity_threshold or split_size > max_split_size:
-                splits.append(current_split)
+                split_text = current_split
+                section_id = current_section_id
+                breadcrumb = current_breadcrumb
+                section_metadata = current_section_metadata
+                splits.append(
+                    {
+                        "id": generate_uuid(
+                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                        ),
+                        "title": breadcrumb,
+                        "text": split_text,
+                        "metadata": {
+                            "split_metadata": {
+                                "character_count": len(split_text),
+                                "word_count": len(split_text.split()),
+                            },
+                            "section_metadata": {
+                                "section_id": section_id,
+                                **(section_metadata.get("section_metadata") or {}),
+                            },
+                            "document_metadata": section_metadata.get(
+                                "document_metadata", {}
+                            ),
+                        },
+                    }
+                )
+
                 current_split = sentence
+                current_section_id = section_id
+                current_breadcrumb = breadcrumb
+                current_section_metadata = section_metadata
+
             else:
                 current_split += " " + sentence
 
         if current_split:
-            splits.append(current_split)
+            split_text = current_split
+            section_id = current_section_id
+            breadcrumb = current_breadcrumb
+            section_metadata = current_section_metadata
+            splits.append(
+                {
+                    "id": generate_uuid(name=f"{section_id}_{breadcrumb}_{split_text}"),
+                    "title": breadcrumb,
+                    "text": split_text,
+                    "metadata": {
+                        "split_metadata": {
+                            "character_count": len(split_text),
+                            "word_count": len(split_text.split()),
+                        },
+                        "section_metadata": {
+                            "section_id": section_id,
+                            **(section_metadata.get("section_metadata") or {}),
+                        },
+                        "document_metadata": section_metadata.get(
+                            "document_metadata", {}
+                        ),
+                    },
+                }
+            )
 
         logging.info(f"Generated {len(splits)} semantic splits successfully.")
         return splits
 
-    except Exception as exc:
-        logging.error(f"Failed to generate semantic splits: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to generate semantic splits: {e}")
+        raise EmbeddingError(e, sys) from e
 
 
 def main() -> None:
@@ -266,51 +299,70 @@ def main() -> None:
     Demonstrates semantic splitting pipeline on extracted PDF documents.
 
     Reads PDF files from the configured PDF directory, cleans extracted text,
-    splits text semantically using embedding similarity, and prints sample splits.
+    enriches metadata, parses pages into structured blocks, splits them semantically
+    using embedding similarity, and prints the generated split records.
 
     Returns:
         None
 
     Raises:
-        MyException: If the semantic splitting demonstration pipeline fails.
+        MyException: If the semantic splitting pipeline fails.
     """
     try:
-        logging.info("Running semantic splitting pipeline demonstration...")
+        logging.info("Running semantic splitting pipeline...")
 
         if not PDFS_DIRPATH.exists():
             raise FileNotFoundError(f"PDF directory does not exist: {PDFS_DIRPATH}")
 
-        pdfs: list[Path] = sorted(PDFS_DIRPATH.glob("*.pdf"))[:2]
-        if not pdfs:
-            logging.warning(f"No PDF files found in {PDFS_DIRPATH}.")
+        files: list[Path]
+        if PDF_NAME:
+            target_file: Path = PDFS_DIRPATH / PDF_NAME
+            if not target_file.exists():
+                raise FileNotFoundError(
+                    f"Configured PDF file does not exist: {target_file}"
+                )
+            files = [target_file]
+        else:
+            files = sorted(PDFS_DIRPATH.glob("*.pdf"))
+
+        if not files:
+            logging.info(f"No PDF files found in {PDFS_DIRPATH}.")
             return
 
-        for pdf in pdfs:
-            logging.info(f"Processing PDF file: {pdf.name} (pages up to {PAGE_NO})...")
-            text: str = extract_pdf_text(file=pdf, end_page=PAGE_NO)
-            clean_text: str = clean_document(text=text)
-
-            splits: list[str] = get_semantic_splits(text=clean_text)
-
-            print(
-                colored("_" * WIDTH, "grey"),
-                colored(f"{pdf.name}".center(WIDTH), "blue"),
+        for file in files:
+            pages: list[str] = extract_pdf_text(
+                file=file,
+                start_page=START_PAGE,
+                end_page=END_PAGE,
             )
+            cleaned_pages: list[str] = [clean_pdf(text=page) for page in pages]
+            metadata: DocumentMetadata = enrich_metadata(
+                path=file, text=" ".join(cleaned_pages)
+            )
+            parsed_pdf: list[DocumentSection] = parse_pdf(
+                path=file,
+                pages=cleaned_pages,
+                metadata=metadata,
+                start_page=START_PAGE or 1,
+            )
+            splits: list[SplitRecord] = get_semantic_splits(
+                document=parsed_pdf, metadata=metadata
+            )
+
+            print_header(file.name)
             console.print_json(
                 data={
                     "total splits": len(splits),
-                    "splits": splits[:5],
+                    "splits": [s for s in splits[:5]],
                 }
             )
-            print(colored("_" * WIDTH, "grey"))
+            print_divider()
 
-        logging.info(
-            "Semantic splitting pipeline demonstration completed successfully."
-        )
+        logging.info("Semantic splitting pipeline completed successfully.")
 
-    except Exception as exc:
-        logging.error(f"Failed to run semantic splitting pipeline: {exc}")
-        raise MyException(exc, sys) from exc
+    except Exception as e:
+        logging.info(f"Failed to run semantic splitting pipeline: {e}")
+        raise MyException(e, sys) from e
 
 
 if __name__ == "__main__":

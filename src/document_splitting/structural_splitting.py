@@ -3,169 +3,196 @@ Provides structural document splitting functionality based on hierarchical
 markdown-style headings and breadcrumb trails.
 """
 
-import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
-
-from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import console
-from src.exception import MyException
+
+from src.document_ingestion.document_cleaning import clean_document
+from src.document_ingestion.document_parsing import parse_document
+from src.document_ingestion.metadata_enrichment import enrich_metadata
+from src.exception import DocumentParsingError, MyException, ValidationError
 from src.logger import logging
+from src.schema import DocumentMetadata, DocumentSection, SplitRecord
+from src.utils import (
+    DOCUMENTS_DIRPATH,
+    PARAMS_FILEPATH,
+    console,
+    generate_uuid,
+    get_terminal_width,
+    load_yaml_file,
+    print_divider,
+    print_header,
+)
 
 try:
-    width = shutil.get_terminal_size().columns
-    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+    WIDTH: int = get_terminal_width()
+    PARAMS: dict[str, Any] = (
+        load_yaml_file(PARAMS_FILEPATH)
+        .get("document_splitting", {})
+        .get("structural", {})
+    )
+    DEFAULT_MAX_SPLIT_SIZE: int = int(PARAMS.get("max_split_size", 50))
+    DEFAULT_OVERLAP: int = int(PARAMS.get("overlap", 10))
+    FILE_NAMES: list[str] = list(
+        PARAMS.get("file_names", ["ai_engineering.md", "products_and_pricing.md"])
+    )
 except Exception as e:
-    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    logging.info(f"Failed to initialize structural splitting module dependencies: {e}")
     raise MyException(e, sys) from e
 
-__all__: list[str] = ["get_structural_splits", "parse_sections"]
-
-
-def parse_sections(text: str) -> list[tuple[str, str]]:
-    """
-    Parses markdown text into hierarchical section tuples of (breadcrumb, body).
-
-    Args:
-        text (str): The markdown text content to parse.
-
-    Returns:
-        list[tuple[str, str]]: A list of (breadcrumb, body) tuples representing
-            each section. Returns an empty list if text is empty.
-
-    Raises:
-        MyException: If text is None or an unexpected error occurs during section parsing.
-    """
-    try:
-        logging.info("Parsing markdown sections...")
-
-        if text is None:
-            raise ValueError("text cannot be None")
-
-        if not text:
-            return []
-
-        breadcrumbs: list[str] = []
-        paragraph_lines: list[str] = []
-        sections: list[tuple[str, str]] = []
-
-        def flush() -> None:
-            if paragraph_lines:
-                paragraph_body: str = " ".join(paragraph_lines).strip()
-
-                if paragraph_body:
-                    sections.append((" > ".join(breadcrumbs) or "Root", paragraph_body))
-                paragraph_lines.clear()
-
-        for line in text.splitlines():
-            match: re.Match[str] | None = re.match(r"^(#+)\s+(.*)$", line)
-            if match:
-                flush()
-                sub: int = len(match.group(1))
-                breadcrumb: str = match.group(2)
-                breadcrumbs = breadcrumbs[: sub - 1] + [breadcrumb]
-            else:
-                paragraph_lines.append(line.strip())
-
-        flush()
-        logging.info("Markdown sections parsed.")
-        return sections
-
-    except Exception as exc:
-        logging.error(f"Failed to parse sections: {exc}")
-        raise MyException(exc, sys) from exc
+__all__: list[str] = ["SplitRecord", "get_structural_splits"]
 
 
 def get_structural_splits(
-    path: Path,
-    max_split_size: int = 20,
-    overlap: int = 5,
-) -> list[dict[str, Any]]:
+    document: list[DocumentSection],
+    max_split_size: int = DEFAULT_MAX_SPLIT_SIZE,
+    overlap: int = DEFAULT_OVERLAP,
+) -> list[SplitRecord]:
     """
-    Splits a document into structured chunks based on section hierarchy with word limits and overlap.
+    Split a structured document into heading-based text splits using a sliding window.
+
+    Each section from the document is split into overlapping word windows while preserving
+    its hierarchical heading breadcrumbs and enriched document metadata.
 
     Args:
-        path (Path): The file path of the document to split.
-        max_split_size (int, optional): Maximum number of words allowed per split. Defaults to 200.
-        overlap (int, optional): Number of overlapping words between consecutive splits. Defaults to 50.
+        document (list[DocumentSection]): List of structured document sections to split.
+        max_split_size (int, optional): Maximum number of words allowed per split.
+            Defaults to DEFAULT_MAX_SPLIT_SIZE.
+        overlap (int, optional): Number of overlapping words between consecutive splits.
+            Defaults to DEFAULT_OVERLAP.
 
     Returns:
-        list[dict[str, Any]]: A list of chunk dictionaries, each containing:
-            - "title" (str): Hierarchical section title trail.
-            - "text" (str): Chunk text content.
+        list[SplitRecord]: A list of split dictionaries, each containing:
+            - "id" (str): Deterministic UUID identifying the split.
+            - "title" (str): Hierarchical section breadcrumb trail.
+            - "text" (str): Split text content.
+            - "metadata" (dict): Section metadata including section_id and document attributes.
+            Returns an empty list if document is empty.
 
     Raises:
-        MyException: If arguments are invalid, the file does not exist, or splitting fails.
+        ValidationError: If document is None, not a list, max_split_size is non-positive,
+            or overlap is negative or greater than or equal to max_split_size.
+        DocumentParsingError: If structural splitting fails.
     """
     try:
-        logging.info(
-            f"Generating structural splits for {path.name if path else 'unknown'}..."
-        )
+        logging.info("Generating structural splits...")
 
-        if not path:
-            raise ValueError("path must be provided")
+        if document is None:
+            raise ValidationError("document cannot be None", sys)
 
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        if max_split_size <= 0:
-            raise ValueError("max_split_size must be greater than zero")
-
-        if overlap < 0 or overlap >= max_split_size:
-            raise ValueError(
-                "overlap must be non-negative and smaller than max_split_size"
+        if not isinstance(document, list):
+            raise ValidationError(
+                f"document must be a list of DocumentSection, got {type(document).__name__}",
+                sys,
             )
 
-        text: str = path.read_text(encoding="utf-8", errors="ignore")
-        sections: list[tuple[str, str]] = parse_sections(text=text)
+        if max_split_size <= 0:
+            raise ValidationError(
+                f"max_split_size must be greater than zero, got {max_split_size}",
+                sys,
+            )
 
-        if not sections:
+        if overlap < 0 or overlap >= max_split_size:
+            raise ValidationError(
+                f"overlap must be non-negative and less than max_split_size ({max_split_size}), got {overlap}",
+                sys,
+            )
+
+        if not document:
+            logging.info("Document section list is empty; returning empty splits.")
             return []
 
-        splits: list[dict[str, Any]] = []
+        splits: list[SplitRecord] = []
+        step: int = max_split_size - overlap
 
-        for breadcrumb, body in sections:
+        for section in document:
+            section_id: str = section.get("id", "")
+            section_metadata: dict[str, Any] = section.get("metadata", {})
+            body: str = section.get("text", "")
+            section_data: dict[str, Any] = dict(
+                section_metadata.get("section_metadata") or {}
+            )
+            breadcrumb: str = str(
+                section.get("title")
+                or section_metadata.get("title")
+                or section_data.get("title", "")
+            )
             words: list[str] = body.split()
 
+            if not words:
+                continue
+
             if len(words) <= max_split_size:
+                split_text: str = " ".join(words)
                 splits.append(
                     {
+                        "id": generate_uuid(
+                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                        ),
                         "title": breadcrumb,
-                        "text": " ".join(words),
+                        "text": split_text,
+                        "metadata": {
+                            "split_metadata": {
+                                "character_count": len(split_text),
+                                "word_count": len(split_text.split()),
+                            },
+                            "section_metadata": {
+                                "section_id": section_id,
+                                **section_data,
+                            },
+                            "document_metadata": section_metadata.get(
+                                "document_metadata", {}
+                            ),
+                        },
                     }
                 )
                 continue
 
             i: int = 0
             n: int = len(words)
-            step: int = max_split_size - overlap
 
             while i < n:
-                chunk_words: list[str] = words[i : i + max_split_size]
-
+                split_words: list[str] = words[i : i + max_split_size]
+                split_text = " ".join(split_words)
                 splits.append(
                     {
+                        "id": generate_uuid(
+                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                        ),
                         "title": breadcrumb,
-                        "text": " ".join(chunk_words),
+                        "text": split_text,
+                        "metadata": {
+                            "split_metadata": {
+                                "character_count": len(split_text),
+                                "word_count": len(split_text.split()),
+                            },
+                            "section_metadata": {
+                                "section_id": section_id,
+                                **section_data,
+                            },
+                            "document_metadata": section_metadata.get(
+                                "document_metadata", {}
+                            ),
+                        },
                     }
                 )
                 if i + max_split_size >= n:
                     break
                 i += step
 
-        logging.info(f"Generated {len(splits)} structural splits.")
+        logging.info(f"Generated {len(splits)} structural splits successfully.")
         return splits
 
-    except Exception as exc:
-        logging.error(f"Failed to generate structural splits: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to generate structural splits: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def main() -> None:
@@ -180,33 +207,31 @@ def main() -> None:
     """
     try:
         logging.info("Running structural splitting pipeline...")
-        files: list[Path] = sorted(
-            [
-                *DOCUMENTS_DIRPATH.glob("*.md"),
-                *DOCUMENTS_DIRPATH.glob("*.txt"),
-            ]
-        )
+        files: list[Path] = [DOCUMENTS_DIRPATH / file_name for file_name in FILE_NAMES]
 
         for file in files:
-            filename = file.name
-            if not filename in ["products_and_pricing.md", "ai_engineering.md"]:
+            if not file.exists():
+                logging.info(f"File not found: {file}")
                 continue
 
-            splits: list[dict[str, Any]] = get_structural_splits(path=file)
-
-            print(
-                colored("_" * width, "grey"),
-                colored(f"{filename}".center(width), "blue"),
+            text: str = file.read_text(encoding="utf-8")
+            cleaned_text: str = clean_document(text=text)
+            metadata: DocumentMetadata = enrich_metadata(path=file, text=cleaned_text)
+            parsed_document: list[DocumentSection] = parse_document(
+                path=file, text=cleaned_text, metadata=metadata
             )
+            splits: list[SplitRecord] = get_structural_splits(document=parsed_document)
+
+            print_header(file.name)
             for split in splits:
-                console.print_json(data=split)
-            print(colored("_" * width, "grey"))
+                console.print_json(data=dict(split))
+            print_divider()
 
         logging.info("Structural splitting pipeline completed.")
 
-    except Exception as exc:
-        logging.error(f"Failed to run structural splitting pipeline: {exc}")
-        raise MyException(exc, sys) from exc
+    except Exception as e:
+        logging.info(f"Failed to run structural splitting pipeline: {e}")
+        raise MyException(e, sys) from e
 
 
 if __name__ == "__main__":

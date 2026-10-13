@@ -4,40 +4,38 @@ enriching documents before they are embedded and stored.
 """
 
 import datetime
-import hashlib
+import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
-
-import yaml
-from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import console
-from src.exception import MyException
+from src.exception import DocumentParsingError, MyException, ValidationError
 from src.logger import logging
+from src.schema import DocumentMetadata
+from src.utils import (
+    DOCUMENTS_DIRPATH,
+    PARAMS_FILEPATH,
+    PDFS_DIRPATH,
+    compute_content_hash,
+    console,
+    load_yaml_file,
+    print_divider,
+    print_header,
+)
 
 try:
-    width = shutil.get_terminal_size().columns
-    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-    PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
-    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
-
-    # Load topics from centralized config, falling back to empty dict if file is empty
-    with open(PARAMS_FILEPATH, "r") as f:
-        params = yaml.safe_load(f) or {}
-
-    TOPICS: list[str] = params.get("topics", [])
+    PARAMS: dict[str, Any] = load_yaml_file(PARAMS_FILEPATH)
+    TOPICS: list[str] = list(PARAMS.get("topics", []))
 except Exception as e:
-    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    logging.info(f"Failed to initialize metadata enrichment module dependencies: {e}")
     raise MyException(e, sys) from e
 
-__all__: list[str] = ["enrich_metadata", "infer_topics"]
+__all__: list[str] = ["DocumentMetadata", "enrich_metadata"]
 
 
 def infer_topics(text: str) -> list[str]:
@@ -54,13 +52,14 @@ def infer_topics(text: str) -> list[str]:
             - An empty list if no topics are found in the text or if text is empty.
 
     Raises:
-        MyException: If text is None or topic inference fails.
+        ValidationError: If text is None.
+        DocumentParsingError: If topic inference fails.
     """
     try:
         logging.info("Inferring topics...")
 
         if text is None:
-            raise ValueError("text cannot be None")
+            raise ValidationError("text cannot be None", sys)
 
         if not text:
             return []
@@ -72,18 +71,20 @@ def infer_topics(text: str) -> list[str]:
             if re.search(rf"\b{re.escape(topic.lower())}\b", normalized_text):
                 inferred_topics.append(topic)
 
-        logging.info("Topics inferred.")
+        logging.info(f"Inferred {len(inferred_topics)} topics.")
         return inferred_topics
 
+    except MyException:
+        raise
     except Exception as e:
-        logging.error(f"Failed to infer topics: {e}")
-        raise MyException(e, sys) from e
+        logging.info(f"Failed to infer topics: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def enrich_metadata(
     path: Path,
     text: str,
-) -> dict[str, Any]:
+) -> DocumentMetadata:
     """
     Enriches a document with metadata extracted from its file system properties
     and content analysis, including file stats, word counts, topics, and a
@@ -94,7 +95,7 @@ def enrich_metadata(
         text (str): The full text content of the document.
 
     Returns:
-        dict[str, Any]:
+        DocumentMetadata:
             - A metadata dictionary containing:
                 - "source" (str): The file path as a string.
                 - "title" (str): The file stem formatted as a title.
@@ -108,49 +109,62 @@ def enrich_metadata(
                 - "content_hash" (str): SHA-256 hash of the text content.
 
     Raises:
-        MyException: If inputs are invalid or metadata extraction fails.
+        ValidationError: If inputs are invalid.
+        DocumentParsingError: If metadata extraction fails.
     """
     try:
-        logging.info("Enriching metadata...")
+        logging.info(f"Enriching metadata for: {path.name if path else 'unknown'}...")
 
         if not path:
-            raise ValueError("path must be provided")
+            raise ValidationError("path must be provided", sys)
 
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
         if text is None:
-            raise ValueError("text cannot be None")
+            raise ValidationError("text cannot be None", sys)
 
-        stats = path.stat()
-        metadata: dict[str, Any] = {
-            "source": str(path),
-            "title": path.stem.replace("_", " ").replace("-", " ").title(),
-            "extension": path.suffix.lower(),
-            # st_birthtime is macOS-specific; fall back to st_ctime on Linux
-            "created_date": datetime.datetime.fromtimestamp(
+        stats: os.stat_result = path.stat()
+        title: str = path.stem.replace("_", " ").replace("-", " ").title()
+        # st_birthtime is macOS-specific; fall back to st_ctime on Linux
+        created_date: str = (
+            datetime.datetime.fromtimestamp(
                 getattr(stats, "st_birthtime", stats.st_ctime), datetime.UTC
             )
             .date()
-            .isoformat(),
-            "modified_date": datetime.datetime.fromtimestamp(
+            .isoformat()
+        )
+        modified_date: str = (
+            datetime.datetime.fromtimestamp(
                 getattr(stats, "st_mtime", stats.st_ctime), datetime.UTC
             )
             .date()
-            .isoformat(),
+            .isoformat()
+        )
+        topics: list[str] = infer_topics(text=text)
+        content_hash: str = compute_content_hash(content=text)
+
+        metadata: DocumentMetadata = {
+            "source": str(path),
+            "title": title,
+            "extension": path.suffix.lower(),
+            "created_date": created_date,
+            "modified_date": modified_date,
             "file_size": stats.st_size,
             "character_count": len(text),
             "word_count": len(text.split()),
-            "topics": infer_topics(text=text),
-            "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "topics": topics,
+            "content_hash": content_hash,
         }
 
-        logging.info("Metadata enriched.")
+        logging.info("Metadata enriched successfully.")
         return metadata
 
+    except MyException:
+        raise
     except Exception as e:
-        logging.error(f"Failed to enrich metadata: {e}")
-        raise MyException(e, sys) from e
+        logging.info(f"Failed to enrich metadata: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def main() -> None:
@@ -163,7 +177,7 @@ def main() -> None:
         None
 
     Raises:
-        MyException: If file reading or metadata enrichment fails.
+        MyException: If the metadata enrichment pipeline fails.
     """
     try:
         logging.info("Running metadata enrichment pipeline...")
@@ -177,18 +191,19 @@ def main() -> None:
         )
 
         for file in files:
-            filename = file.name
-            text: str = file.read_text(encoding="utf-8", errors="ignore")
+            metadata: DocumentMetadata = enrich_metadata(
+                path=file,
+                text=file.read_text(encoding="utf-8", errors="ignore"),
+            )
 
-            metadata: dict[str, Any] = enrich_metadata(path=file, text=text)
-            print(colored("_" * width, "grey"), colored(filename.center(width), "blue"))
-            console.print_json(data=metadata)
-            print(colored("_" * width, "grey"))
+            print_header(file.name)
+            console.print_json(data=dict(metadata))
+            print_divider()
 
         logging.info("Metadata enrichment pipeline completed.")
 
     except Exception as e:
-        logging.error(f"Failed to run metadata enrichment pipeline: {e}")
+        logging.info(f"Failed to run metadata enrichment pipeline: {e}")
         raise MyException(e, sys) from e
 
 

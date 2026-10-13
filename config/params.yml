@@ -1,3 +1,42 @@
+LANGSMITH_PROJECT: advanced-rag
+LANGCHAIN_TRACING_V2: true
+
+document_ingestion:
+  pdf_cleaning:
+    start_page: 427
+    end_page: 428
+    pdf_name: "AI Engineering Building Applications.pdf"
+  document_parsing:
+    file_names:
+      - "ai_engineering.md"
+      - "products_and_pricing.md"
+  pdf_parsing:
+    pdf_text_index: 4
+
+document_splitting:
+  structural:
+    max_split_size: 50
+    overlap: 10
+    file_names:
+      - "ai_engineering.md"
+      - "products_and_pricing.md"
+  semantic:
+    similarity_threshold: 0.8
+    max_split_size: 1000
+    start_page: 427
+    end_page: 428
+    pdf_name: "AI Engineering Building Applications.pdf"
+    embedding_model: "gemini-embedding-001"
+    embedding_dimension: 384
+  hierarchical:
+    start_page: 426
+  contexual:
+    max_split_size: 20
+    overlap: 5
+
+
+
+
 topics:
   - Technology
   - Science
@@ -83,6 +122,3 @@ topics:
   - Git
   - Documentation
   - Other
-
-LANGSMITH_PROJECT: advanced-rag
-LANGCHAIN_TRACING_V2: true

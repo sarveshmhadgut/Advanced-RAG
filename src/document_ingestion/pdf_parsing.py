@@ -4,32 +4,42 @@ block metadata, classifying each block as header, table, or paragraph.
 """
 
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
-
-import pymupdf
-from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import console
-from src.exception import MyException
+from src.document_ingestion.metadata_enrichment import enrich_metadata
+from src.document_ingestion.pdf_cleaning import clean_pdf
+from src.exception import DocumentParsingError, MyException, ValidationError
 from src.logger import logging
+from src.schema import DocumentMetadata, DocumentSection
+from src.utils import (
+    PARAMS_FILEPATH,
+    PDFS_DIRPATH,
+    console,
+    extract_pdf_text,
+    generate_uuid,
+    load_yaml_file,
+    print_divider,
+    print_header,
+)
 
 try:
-    width = shutil.get_terminal_size().columns
-    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-    PARAMS_FILEPATH: Path = ROOT / "config" / "params.yml"
-    PYMUPDF_TEXT_INDEX: int = 4
+    PARAMS: dict[str, Any] = (
+        load_yaml_file(PARAMS_FILEPATH)
+        .get("document_ingestion", {})
+        .get("pdf_parsing", {})
+    )
+    PYMUPDF_TEXT_INDEX: int = int(PARAMS.get("pdf_text_index", 4))
 except Exception as e:
-    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    logging.info(f"Failed to initialize PDF parsing module dependencies: {e}")
     raise MyException(e, sys) from e
 
-__all__: list[str] = ["extract_pdf_text", "label_line", "parse_pdf"]
+__all__: list[str] = ["parse_pdf"]
 
 
 def label_line(line: str) -> str:
@@ -47,13 +57,13 @@ def label_line(line: str) -> str:
             - "paragraph" otherwise.
 
     Raises:
-        MyException: If line is None or labeling fails.
+        ValidationError: If line is None.
     """
     try:
         logging.info("Labeling line...")
 
         if line is None:
-            raise ValueError("line cannot be None")
+            raise ValidationError("line cannot be None", sys)
 
         tokens: list[str] = line.split()
 
@@ -67,167 +77,139 @@ def label_line(line: str) -> str:
         logging.info("Line labeled.")
         return "paragraph"
 
+    except MyException:
+        raise
     except Exception as e:
-        logging.error(f"Failed to label line: {e}")
-        raise MyException(e, sys) from e
+        logging.info(f"Failed to label line: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
-def parse_pdf(path: Path) -> list[dict[str, Any]]:
+def parse_pdf(
+    path: Path,
+    pages: list[str] | None = None,
+    metadata: DocumentMetadata | None = None,
+    blocks: list[str] | list[list[str]] | None = None,
+    start_page: int = 1,
+) -> list[DocumentSection]:
     """
-    Parses a PDF file into structured block-level entries with page numbers,
-    block numbers, content type classification, and extracted text.
+    Parses a PDF into structured block-level entries from cleaned pages,
+    cleaned blocks, or directly from the document file.
 
     Args:
-        path (Path): The file path to the PDF document to parse.
+        path (Path): The file path to the PDF document.
+        pages (list[str] | None, optional): Pre-cleaned page strings to segment into blocks.
+            Defaults to None.
+        metadata (DocumentMetadata | None, optional): Enriched document metadata.
+            Defaults to None.
+        blocks (list[str] | list[list[str]] | None, optional): Pre-cleaned block strings
+            (either a flat list for a single page or a list of block lists per page).
+            Defaults to None.
+        start_page (int, optional): 1-indexed starting page number for page indexing.
+            Defaults to 1.
 
     Returns:
-        list[dict[str, Any]]:
-            - A list of entry dictionaries, each containing:
-                - "source" (str): The PDF file path as a string.
-                - "page" (int): The 1-indexed page number.
-                - "block" (int): The 1-indexed block number within the page.
-                - "kind" (str): The content type ("header", "table", or "paragraph").
-                - "text" (str): The extracted text content of the block.
+        list[DocumentSection]: A list of entry dictionaries, each containing:
+            - "id" (str): Deterministic UUID identifying the block.
+            - "text" (str): Cleaned block text content.
+            - "metadata" (dict[str, Any]): Nested section and document metadata.
+            Returns an empty list if no blocks are extracted.
 
     Raises:
-        MyException: If inputs are invalid or PDF cannot be parsed.
+        ValidationError: If path or start_page are invalid.
+        DocumentParsingError: If PDF parsing fails.
     """
     try:
-        logging.info("Parsing PDF...")
+        logging.info(f"Parsing PDF: {path}...")
 
-        if not path:
-            raise ValueError("path must be provided")
+        if path is None:
+            raise ValidationError("path cannot be None", sys)
 
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        if path.suffix.lower() != ".pdf":
-            raise ValueError(f"File must be a PDF: {path}")
-
-        entries: list[dict[str, Any]] = []
-        with pymupdf.open(path) as f:
-            for page_number, page in enumerate(f, 1):
-                # Extract sorted text blocks; block[4] holds the text content
-                blocks: list[Any] = page.get_text("blocks", sort=True)
-
-                for block_number, block in enumerate(blocks, 1):
-                    text: str = block[PYMUPDF_TEXT_INDEX].strip()
-                    lines: list[str] = [
-                        line for line in text.splitlines() if line.strip()
-                    ]
-                    kind: str = (
-                        "table"
-                        if any(label_line(line) for line in lines)
-                        else label_line(text)
-                    )
-
-                    entry: dict[str, Any] = {
-                        "source": str(path),
-                        "page": page_number,
-                        "block": block_number,
-                        "kind": kind,
-                        "text": text,
-                    }
-
-                    entries.append(entry)
-
-        logging.info("PDF parsed.")
-        return entries
-
-    except Exception as e:
-        logging.error(f"Failed to parse PDF: {e}")
-        raise MyException(e, sys) from e
-
-
-def extract_pdf_text(
-    file: Path,
-    start_page: int | None = None,
-    end_page: int | None = None,
-) -> str:
-    """
-    Extract text block-by-block from a PDF while preserving structural boundaries.
-
-    Args:
-        file (Path): The file path to the PDF document.
-        start_page (int, optional): 1-indexed starting page number (inclusive). Defaults to None.
-        end_page (int, optional): 1-indexed ending page number (inclusive). Defaults to None.
-
-    Returns:
-        str: Cleaned and structured text extracted from the specified page range.
-
-    Raises:
-        MyException: If inputs are invalid or PDF extraction fails.
-    """
-    try:
-        logging.info("Extracting PDF text...")
-
-        if not file:
-            raise ValueError("file must be provided")
-
-        if not file.exists():
-            raise FileNotFoundError(f"File not found: {file}")
-
-        if file.suffix.lower() != ".pdf":
-            raise ValueError(
-                f"Expected a PDF file (.pdf), but got '{file.suffix}': {file.name}"
+        file_path: Path = Path(path)
+        if start_page < 1:
+            raise ValidationError(
+                f"start_page must be greater than or equal to 1, got: {start_page}",
+                sys,
             )
 
-        if start_page is not None and start_page <= 0:
-            raise ValueError("start_page must be greater than zero")
+        page_items: list[tuple[int, list[str]]] = []
 
-        if end_page is not None and end_page <= 0:
-            raise ValueError("end_page must be greater than zero")
-
-        if start_page is not None and end_page is not None and start_page > end_page:
-            raise ValueError("start_page cannot be greater than end_page")
-
-        page_texts: list[str] = []
-
-        with pymupdf.open(file) as pdf:
-            total_pages: int = len(pdf)
-
-            if start_page is not None and start_page > total_pages:
-                raise ValueError(
-                    f"start_page ({start_page}) exceeds total document pages ({total_pages})"
-                )
-
-            for page_num, page in enumerate(pdf, start=1):
-                if start_page and page_num < start_page:
+        if blocks is not None:
+            if blocks and isinstance(blocks[0], list):
+                for page_offset, page_block_list in enumerate(blocks):
+                    current_page: int = start_page + page_offset
+                    valid_blocks: list[str] = [
+                        str(b).strip() for b in page_block_list if str(b).strip()
+                    ]
+                    page_items.append((current_page, valid_blocks))
+            elif blocks:
+                valid_blocks = [str(b).strip() for b in blocks if str(b).strip()]
+                page_items.append((start_page, valid_blocks))
+        elif pages is not None:
+            for page_offset, page_content in enumerate(pages):
+                current_page = start_page + page_offset
+                if page_content is None:
                     continue
+                extracted_blocks: list[str] = [
+                    b.strip()
+                    for b in re.split(r"\n\s*\n", str(page_content))
+                    if b.strip()
+                ]
+                page_items.append((current_page, extracted_blocks))
+        else:
+            if not file_path.exists():
+                raise ValidationError(f"File not found: {file_path}", sys)
+            if file_path.suffix.lower() != ".pdf":
+                raise ValidationError(
+                    f"Expected a PDF file, got: {file_path.suffix}", sys
+                )
+            raw_pages: list[str] = extract_pdf_text(file=file_path)
+            for page_offset, raw_page in enumerate(raw_pages):
+                current_page = start_page + page_offset
+                cleaned_page: str = clean_pdf(text=raw_page)
+                extracted_blocks = [
+                    b.strip() for b in re.split(r"\n\s*\n", cleaned_page) if b.strip()
+                ]
+                page_items.append((current_page, extracted_blocks))
 
-                if end_page and page_num > end_page:
-                    break
+        entries: list[DocumentSection] = []
+        for page_number, block_list in page_items:
+            for block_number, text in enumerate(block_list, 1):
+                lines: list[str] = [line for line in text.splitlines() if line.strip()]
+                kind: str = (
+                    "table"
+                    if any(label_line(line) == "table" for line in lines)
+                    else label_line(text)
+                )
+                entry: DocumentSection = {
+                    "id": generate_uuid(f"{page_number}_{block_number}_{text}"),
+                    "text": text,
+                    "metadata": {
+                        "section_metadata": {
+                            "page_no": page_number,
+                            "block_no": block_number,
+                            "kind": kind,
+                            "character_count": len(text),
+                            "word_count": len(text.split()),
+                        },
+                        "document_metadata": metadata or {},
+                    },
+                }
+                entries.append(entry)
 
-                page_blocks: list[str] = []
-                prev_y1 = None
+        logging.info(f"Parsed {len(entries)} blocks from PDF: {file_path.name}.")
+        return entries
 
-                for block in page.get_text("blocks", sort=True):
-                    block_text = block[4].strip()
-
-                    if not block_text:
-                        continue
-
-                    y0, y1 = block[1], block[3]
-                    if prev_y1 is not None:
-                        page_blocks.append("\n" if 0 <= y0 - prev_y1 <= 15 else "\n\n")
-
-                    page_blocks.append(block_text)
-                    prev_y1 = y1
-
-                page_texts.append("".join(page_blocks))
-
-        logging.info("PDF text extracted.")
-        return "\n\n".join(page_texts)
-
-    except Exception as exc:
-        logging.error(f"Failed to extract PDF text: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to parse PDF: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def main() -> None:
     """
-    Demonstrates the PDF parsing pipeline by reading all PDF files from
-    the PDFs directory and printing their parsed block-level entries.
+    Demonstrates the PDF parsing pipeline by extracting and cleaning pages
+    from PDF files and printing their parsed block-level entries.
 
     Returns:
         None
@@ -238,20 +220,26 @@ def main() -> None:
     try:
         logging.info("Running PDF parsing pipeline...")
 
-        pdfs: list[Path] = sorted(PDFS_DIRPATH.glob("*.pdf"))[:2]
-        for pdf in pdfs:
-            filename = pdf.name
-            parsed_pdf = parse_pdf(pdf)[:10]
+        files: list[Path] = sorted(PDFS_DIRPATH.glob("*.pdf"))
+        for file in files:
+            pages: list[str] = extract_pdf_text(file=file, start_page=1, end_page=2)
+            cleaned_pages: list[str] = [clean_pdf(text=page) for page in pages]
+            metadata: DocumentMetadata = enrich_metadata(
+                path=file, text=" ".join(cleaned_pages)
+            )
+            parsed_pdf: list[DocumentSection] = parse_pdf(
+                path=file, pages=cleaned_pages, metadata=metadata, start_page=1
+            )[:10]
 
-            print(colored("_" * width, "grey"), colored(filename.center(width), "blue"))
+            print_header(file.name)
             for doc in parsed_pdf:
-                console.print_json(data=doc)
-            print(colored("_" * width, "grey"))
+                console.print_json(data=dict(doc))
+            print_divider()
 
         logging.info("PDF parsing pipeline completed.")
 
     except Exception as e:
-        logging.error(f"Failed to run PDF parsing pipeline: {e}")
+        logging.info(f"Failed to run PDF parsing pipeline: {e}")
         raise MyException(e, sys) from e
 
 

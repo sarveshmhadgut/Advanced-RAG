@@ -1,53 +1,57 @@
 """
-Utilities for cleaning raw text extracted from PDFs and other documents.
+Utilities for cleaning and normalizing markdown and text documents while preserving structural elements.
 """
 
 import re
-import shutil
 import sys
 from pathlib import Path
-
-from termcolor import colored
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import console
-from src.document_ingestion.pdf_parsing import extract_pdf_text
-from src.exception import MyException
+from src.exception import DocumentParsingError, MyException, ValidationError
 from src.logger import logging
+from src.utils import (
+    DOCUMENTS_DIRPATH,
+    console,
+    get_terminal_width,
+    print_divider,
+    print_header,
+)
 
 try:
-    width = shutil.get_terminal_size().columns
-    PDFS_DIRPATH: Path = ROOT / "data" / "input" / "pdfs"
-    DOCUMENTS_DIRPATH: Path = ROOT / "data" / "input" / "documents"
+    WIDTH: int = get_terminal_width()
 except Exception as e:
-    logging.error(f"Failed to initialize semantic splitting module dependencies: {e}")
+    logging.info(f"Failed to initialize document cleaning module dependencies: {e}")
     raise MyException(e, sys) from e
 
-__all__: list[str] = ["clean_document"]
+__all__: list[str] = [
+    "clean_document",
+    "normalize_characters",
+    "normalize_whitespace",
+]
 
 
 def normalize_characters(text: str) -> str:
     """
-    Normalize common PDF extraction artifacts, ligatures, and line endings.
+    Normalize control characters, null bytes, special whitespace, and line endings.
 
     Args:
-        text (str): The raw text extracted from a document.
+        text (str): Raw document text.
 
     Returns:
-        str: The normalized text with standardized ligatures, control characters removed,
-            and line endings unified.
+        str: Text with unified newlines, removed control characters, and normalized whitespace symbols.
 
     Raises:
-        MyException: If text is None or character normalization fails.
+        ValidationError: If text is None.
+        DocumentParsingError: If character normalization fails.
     """
     try:
-        logging.info("Normalizing characters...")
+        logging.info("Normalizing document characters...")
 
         if text is None:
-            raise ValueError("text cannot be None")
+            raise ValidationError("text cannot be None", sys)
 
         # Remove null bytes and non-printable control characters.
         text = text.replace("\x00", "")
@@ -57,7 +61,7 @@ def normalize_characters(text: str) -> str:
             text,
         )
 
-        # Normalize special whitespace characters.
+        # Normalize special whitespace characters and BOM.
         text = text.replace("\u00a0", " ")
         text = text.replace("\u200b", "")
         text = text.replace("\ufeff", "")
@@ -76,267 +80,183 @@ def normalize_characters(text: str) -> str:
         for original, replacement in ligatures.items():
             text = text.replace(original, replacement)
 
-        # Normalize line endings without deleting line breaks.
+        # Unify line endings to \n.
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-        logging.info("Characters normalized.")
+        logging.info("Document characters normalized successfully.")
         return text
 
-    except Exception as exc:
-        logging.error(f"Failed to normalize characters: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to normalize document characters: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
-def repair_hyphenated_line_breaks(text: str) -> str:
+def normalize_whitespace(text: str, preserve_markdown: bool = True) -> str:
     """
-    Join words split across line breaks by hyphens.
+    Normalize whitespace while optionally preserving Markdown structural elements and paragraph breaks.
+
+    When preserve_markdown is True, preserves headings (#), lists (- / * / 1.), blockquotes (>),
+    tables (|), code fences (```), and blank-line paragraph boundaries.
+    When False, collapses soft line wraps within paragraphs into single spaces (ideal for PDF extractions).
 
     Args:
-        text (str): The text containing potential hyphenated line breaks.
+        text (str): Document text with inconsistent whitespace.
+        preserve_markdown (bool, optional): Whether to preserve Markdown structural elements.
+            Defaults to True.
 
     Returns:
-        str: The repaired text with split words reconnected.
+        str: Text with normalized intra-line spacing and clean paragraph separation.
 
     Raises:
-        MyException: If text is None or repairing hyphenated breaks fails.
+        ValidationError: If text is None.
+        DocumentParsingError: If whitespace normalization fails.
     """
     try:
-        logging.info("Repairing hyphenated line breaks...")
+        logging.info("Normalizing document whitespace...")
 
         if text is None:
-            raise ValueError("text cannot be None")
+            raise ValidationError("text cannot be None", sys)
 
-        repaired_text: str = re.sub(
-            r"(?<=\w)-[ \t]*\n[ \t]*(?=\w)",
-            "",
-            text,
-        )
-
-        logging.info("Hyphenated line breaks repaired.")
-        return repaired_text
-
-    except Exception as exc:
-        logging.error(f"Failed to repair hyphenated line breaks: {exc}")
-        raise MyException(exc, sys) from exc
-
-
-def normalize_whitespace(text: str) -> str:
-    """
-    Normalize whitespace while preserving blank-line paragraph boundaries.
-
-    Args:
-        text (str): The text with inconsistent whitespace or excessive blank lines.
-
-    Returns:
-        str: Text with collapsed intra-paragraph spaces and preserved paragraph breaks.
-
-    Raises:
-        MyException: If text is None or whitespace normalization fails.
-    """
-    try:
-        logging.info("Normalizing whitespace...")
-
-        if text is None:
-            raise ValueError("text cannot be None")
-
+        # Ensure line endings are standard.
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-        # Remove trailing spaces from lines.
-        text = re.sub(
-            r"[ \t]+$",
-            "",
-            text,
-            flags=re.MULTILINE,
-        )
+        # Strip trailing spaces from each line.
+        text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
 
-        # Normalize repeated spaces and tabs.
-        text = re.sub(
-            r"[ \t]{2,}",
-            " ",
-            text,
-        )
+        if preserve_markdown:
+            # Ensure headings have isolated blank lines around them.
+            text = re.sub(r"(?m)^([ \t]*#+.*)$", r"\n\n\1\n\n", text)
 
-        # Remove spaces before punctuation.
-        text = re.sub(
-            r"[ \t]+([,.;:!?])",
-            r"\1",
-            text,
-        )
+        # Normalize multiple blank lines to double newlines (paragraph boundary).
+        text = re.sub(r"\n{3,}", "\n\n", text)
 
-        # Preserve blank lines as paragraph boundaries.
-        text = re.sub(
-            r"\n[ \t]*\n+",
-            "\n\n",
-            text,
-        )
-
-        # Join single newlines within paragraphs only.
-        paragraphs: list[str] = re.split(
-            r"\n\n",
-            text,
-        )
+        # Process paragraph by paragraph.
+        paragraphs: list[str] = [p.strip() for p in text.split("\n\n") if p.strip()]
 
         cleaned_paragraphs: list[str] = []
         for paragraph in paragraphs:
-            paragraph = re.sub(
-                r"[ \t]*\n[ \t]*",
-                " ",
-                paragraph,
-            )
-            paragraph = re.sub(
-                r"[ \t]{2,}",
-                " ",
-                paragraph,
-            )
+            lines: list[str] = paragraph.splitlines()
 
-            paragraph = paragraph.strip()
-            if paragraph:
-                cleaned_paragraphs.append(paragraph)
+            # If preserve_markdown is enabled and it's a code block or multi-line list/table, preserve line structure.
+            if preserve_markdown and any(
+                re.match(r"^\s*(#+|-|\*|\+|\d+\.|>|\||```)", line) for line in lines
+            ):
+                cleaned_lines: list[str] = [
+                    re.sub(r"[ \t]{2,}", " ", line.rstrip()) for line in lines
+                ]
+                cleaned_paragraphs.append("\n".join(cleaned_lines))
+            else:
+                # Regular paragraph: normalize intra-paragraph spaces while joining lines.
+                single_para: str = re.sub(r"[ \t]*\n[ \t]*", " ", paragraph)
+                single_para = re.sub(r"[ \t]{2,}", " ", single_para)
+                single_para = re.sub(r"[ \t]+([,.;:!?])", r"\1", single_para)
+                cleaned_paragraphs.append(single_para.strip())
 
-        logging.info("Whitespace normalized.")
-        return "\n\n".join(cleaned_paragraphs)
+        result: str = "\n\n".join(cleaned_paragraphs)
+        logging.info("Document whitespace normalized successfully.")
+        return result
 
-    except Exception as exc:
-        logging.error(f"Failed to normalize whitespace: {exc}")
-        raise MyException(exc, sys) from exc
-
-
-def remove_page_artifacts(text: str) -> str:
-    """
-    Remove standalone page-number artifacts and common extraction watermarks.
-
-    Args:
-        text (str): The text containing page numbers or header/footer artifacts.
-
-    Returns:
-        str: Text with page numbers and known watermarks stripped.
-
-    Raises:
-        MyException: If text is None or removing page artifacts fails.
-    """
-    try:
-        logging.info("Removing page artifacts...")
-
-        if text is None:
-            raise ValueError("text cannot be None")
-
-        # Standalone page numbers.
-        text = re.sub(r"(?m)^[ \t]*\d{1,4}[ \t]*$", "", text)
-
-        # Remove repeated dot sequences (such as dot leaders in tables of contents).
-        text = re.sub(r"(?:\.[ \t]*){2,}", " ", text)
-
-        # Page X of Y.
-        text = re.sub(r"(?im)^[ \t]*page[ \t]+\d+[ \t]+of[ \t]+\d+[ \t]*$", "", text)
-
-        # Known standalone watermark.
-        text = re.sub(r"(?im)^[ \t]*OceanofPDF\.com[ \t]*$", "", text)
-
-        logging.info("Page artifacts removed.")
-        return text
-
-    except Exception as exc:
-        logging.error(f"Failed to remove page artifacts: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to normalize document whitespace: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def clean_document(text: str) -> str:
     """
-    Clean a full document extracted from a PDF or text source.
+    Clean and normalize a markdown or text document while preserving all structural elements.
 
     Args:
-        text (str): Raw extracted document text.
+        text (str): Raw document text.
 
     Returns:
-        str: Cleaned text with meaningful paragraph boundaries preserved.
+        str: Cleaned text with normalized characters, spacing, and structural boundaries.
 
     Raises:
-        MyException: If text is None or document cleaning fails.
+        ValidationError: If text is None.
+        DocumentParsingError: If document cleaning fails.
     """
     try:
         logging.info("Cleaning document text...")
 
         if text is None:
-            raise ValueError("text cannot be None")
+            raise ValidationError("text cannot be None", sys)
 
         if not text:
             return ""
 
         text = normalize_characters(text)
-        text = repair_hyphenated_line_breaks(text)
-        text = remove_page_artifacts(text)
         text = normalize_whitespace(text)
 
-        logging.info("Document text cleaned.")
+        logging.info("Document text cleaned successfully.")
         return text
 
-    except Exception as exc:
-        logging.error(f"Failed to clean document text: {exc}")
-        raise MyException(exc, sys) from exc
+    except MyException:
+        raise
+    except Exception as e:
+        logging.info(f"Failed to clean document text: {e}")
+        raise DocumentParsingError(e, sys) from e
 
 
 def main() -> None:
     """
-    Demonstrates the document cleaning pipeline on sample text with extraction artifacts.
+    Demonstrates the document cleaning pipeline on sample markdown documents.
 
     Returns:
         None
 
     Raises:
-        MyException: If running the document cleaning pipeline fails.
+        MyException: If running the document cleaning demonstration fails.
     """
     try:
-        logging.info("Running document cleaning pipeline...")
+        logging.info("Running document cleaning pipeline demonstration...")
 
-        # file: Path = DOCUMENTS_DIRPATH / "ai_engineering.md"
-        file: Path = PDFS_DIRPATH / "AI Engineering Building Applications.pdf"
+        files: list[Path] = sorted(
+            [
+                *DOCUMENTS_DIRPATH.glob("*.md"),
+                *DOCUMENTS_DIRPATH.glob("*.txt"),
+            ]
+        )
+        for file in files:
+            if not file.exists():
+                logging.info(f"Sample file not found at {file}")
+                continue
 
-        if not file.exists():
-            logging.warning(f"Sample file not found at {file}")
-            return
+            raw_text: str = file.read_text(encoding="utf-8")
+            cleaned_text: str = clean_document(text=raw_text)
 
-        raw_text: str
-        if file.suffix.lower() == ".pdf":
-            raw_text = extract_pdf_text(
-                file=file,
-                start_page=426,
-                end_page=428,
+            print_header(f"Cleaned: {file.name}")
+            console.print(cleaned_text, markup=False)
+            print_divider()
+
+            print_header("Stats")
+            console.print_json(
+                data={
+                    "File": file.name,
+                    "Lines": {
+                        "Before": len(raw_text.splitlines()),
+                        "After": len(cleaned_text.splitlines()),
+                    },
+                    "Words": {
+                        "Before": len(raw_text.split()),
+                        "After": len(cleaned_text.split()),
+                    },
+                    "Characters": {
+                        "Before": len(raw_text),
+                        "After": len(cleaned_text),
+                    },
+                }
             )
-        else:
-            raw_text = file.read_text(encoding="utf-8")
+            print_divider()
 
-        cleaned_text: str = clean_document(text=raw_text)
+        logging.info("Document cleaning pipeline demonstration completed.")
 
-        print(
-            colored("_" * width, "grey"), colored("Cleaned text".center(width), "blue")
-        )
-        console.print(cleaned_text)
-        print(colored("_" * width, "grey"))
-
-        print(colored("_" * width, "grey"), colored("Stats".center(width), "blue"))
-        console.print_json(
-            data={
-                "Lines": {
-                    "Before": len(raw_text.splitlines()),
-                    "After": len(cleaned_text.splitlines()),
-                },
-                "Words": {
-                    "Before": len(raw_text.split()),
-                    "After": len(cleaned_text.split()),
-                },
-                "Characters": {
-                    "Before": len(raw_text),
-                    "After": len(cleaned_text),
-                },
-            }
-        )
-        print(colored("_" * width, "grey"))
-
-        logging.info("Document cleaning pipeline completed.")
-
-    except Exception as exc:
-        logging.error(f"Failed to run document cleaning pipeline: {exc}")
-        raise MyException(exc, sys) from exc
+    except Exception as e:
+        logging.info(f"Failed to run document cleaning pipeline: {e}")
+        raise MyException(e, sys) from e
 
 
 if __name__ == "__main__":

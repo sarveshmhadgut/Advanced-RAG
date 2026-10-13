@@ -4,7 +4,14 @@ Custom exception definitions and error formatting utilities.
 
 import types
 
-__all__: list[str] = ["MyException", "error_message_detail"]
+__all__: list[str] = [
+    "ConfigurationError",
+    "DocumentParsingError",
+    "EmbeddingError",
+    "MyException",
+    "ValidationError",
+    "error_message_detail",
+]
 
 
 def error_message_detail(error: Exception | str, error_detail: types.ModuleType) -> str:
@@ -30,6 +37,10 @@ def error_message_detail(error: Exception | str, error_detail: types.ModuleType)
 
 
 class MyException(Exception):
+    """
+    Base custom application exception with traceback and file context.
+    """
+
     def __init__(
         self, error_message: Exception | str, error_detail: types.ModuleType
     ) -> None:
@@ -53,3 +64,19 @@ class MyException(Exception):
             str: The detailed error message string.
         """
         return self.error_message
+
+
+class ConfigurationError(MyException):
+    """Raised when configuration loading, parsing, or validation fails."""
+
+
+class DocumentParsingError(MyException):
+    """Raised when parsing or extracting documents (PDF, Markdown, TXT) fails."""
+
+
+class EmbeddingError(MyException):
+    """Raised when embedding model initialization or vector generation fails."""
+
+
+class ValidationError(MyException):
+    """Raised when input parameters, thresholds, or dimensions fail validation."""
