@@ -163,12 +163,11 @@ def get_hierarchical_splits(
                     splits.append(
                         {
                             "id": sentence_id,
-                            "sentence_id": sentence_id,
                             "text": sentence,
-                            "paragraph_id": paragraph_id,
-                            "page_id": page_id,
                             "metadata": {
                                 "split_metadata": {
+                                    "paragraph_id": paragraph_id,
+                                    "page_id": page_id,
                                     "character_count": len(sentence),
                                     "word_count": len(sentence.split()),
                                 },

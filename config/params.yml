@@ -33,9 +33,11 @@ document_splitting:
   contexual:
     max_split_size: 20
     overlap: 5
-
-
-
+  sentence_window:
+    start_page: 427
+    end_page: 428
+    pdf_name: "AI Engineering Building Applications.pdf"
+    window_size: 2
 
 topics:
   - Technology

@@ -12,6 +12,7 @@ from .hierarchical_splitting import (
     get_hierarchical_splits,
 )
 from .semantic_splitting import get_semantic_splits
+from .sentence_window_splitting import get_sentence_window_splits
 from .structural_splitting import (
     SplitRecord,
     get_structural_splits,
@@ -23,5 +24,6 @@ __all__: list[str] = [
     "SplitRecord",
     "get_hierarchical_splits",
     "get_semantic_splits",
+    "get_sentence_window_splits",
     "get_structural_splits",
 ]

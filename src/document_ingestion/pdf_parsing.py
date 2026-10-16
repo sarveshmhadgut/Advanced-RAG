@@ -181,7 +181,9 @@ def parse_pdf(
                     else label_line(text)
                 )
                 entry: DocumentSection = {
-                    "id": generate_uuid(f"{page_number}_{block_number}_{text}"),
+                    "id": generate_uuid(
+                        f"{page_number}_{block_number}_{text}", as_hex=True
+                    ),
                     "text": text,
                     "metadata": {
                         "section_metadata": {

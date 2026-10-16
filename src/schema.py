@@ -2,7 +2,7 @@
 Shared domain data schemas and TypedDict definitions for documents, ingestion, and splitting.
 """
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 __all__: list[str] = [
     "DocumentMetadata",
@@ -39,13 +39,14 @@ class HierarchicalRecord(TypedDict, total=False):
 
 class SplitRecord(TypedDict):
     """
-    Representation of a heading-based structural text split.
+    Representation of a text split (structural, semantic, or sentence-window).
     """
 
     id: str
-    title: str
     text: str
     metadata: dict[str, Any]
+    title: NotRequired[str | None]
+    window_text: NotRequired[str | None]
 
 
 class DocumentSection(TypedDict):

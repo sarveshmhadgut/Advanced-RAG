@@ -9,7 +9,6 @@ from typing import Any
 
 from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langsmith import traceable
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -65,7 +64,6 @@ except Exception as e:
 __all__: list[str] = ["get_semantic_splits"]
 
 
-@traceable(name="get_semantic_splits")
 def get_semantic_splits(
     document: list[DocumentSection] | str,
     metadata: DocumentMetadata | None = None,
@@ -187,7 +185,9 @@ def get_semantic_splits(
             split_text, section_id, breadcrumb, section_metadata = sentences[0]
             return [
                 {
-                    "id": generate_uuid(name=f"{section_id}_{breadcrumb}_{split_text}"),
+                    "id": generate_uuid(
+                        name=f"{section_id}_{breadcrumb}_{split_text}", as_hex=True
+                    ),
                     "title": breadcrumb,
                     "text": split_text,
                     "metadata": {
@@ -230,7 +230,7 @@ def get_semantic_splits(
                 splits.append(
                     {
                         "id": generate_uuid(
-                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                            name=f"{section_id}_{breadcrumb}_{split_text}", as_hex=True
                         ),
                         "title": breadcrumb,
                         "text": split_text,
@@ -265,7 +265,9 @@ def get_semantic_splits(
             section_metadata = current_section_metadata
             splits.append(
                 {
-                    "id": generate_uuid(name=f"{section_id}_{breadcrumb}_{split_text}"),
+                    "id": generate_uuid(
+                        name=f"{section_id}_{breadcrumb}_{split_text}", as_hex=True
+                    ),
                     "title": breadcrumb,
                     "text": split_text,
                     "metadata": {

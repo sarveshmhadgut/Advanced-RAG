@@ -132,7 +132,7 @@ def get_structural_splits(
                 splits.append(
                     {
                         "id": generate_uuid(
-                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                            name=f"{section_id}_{breadcrumb}_{split_text}", as_hex=True
                         ),
                         "title": breadcrumb,
                         "text": split_text,
@@ -162,7 +162,7 @@ def get_structural_splits(
                 splits.append(
                     {
                         "id": generate_uuid(
-                            name=f"{section_id}_{breadcrumb}_{split_text}"
+                            name=f"{section_id}_{breadcrumb}_{split_text}", as_hex=True
                         ),
                         "title": breadcrumb,
                         "text": split_text,

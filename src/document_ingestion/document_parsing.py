@@ -92,7 +92,9 @@ def parse_document(
                 title: str = " > ".join(breadcrumbs) if breadcrumbs else "Root"
                 sections.append(
                     {
-                        "id": generate_uuid(name=f"{path}_{title}_{body_content}"),
+                        "id": generate_uuid(
+                            name=f"{path}_{title}_{body_content}", as_hex=True
+                        ),
                         "text": body_content,
                         "metadata": {
                             "section_metadata": {
